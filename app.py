@@ -9,7 +9,6 @@ import threading
 from functools import wraps
 from datetime import datetime, timedelta
 import random
-from urllib.parse import urlsplit
 
 from flask import (
     Flask, render_template, request, redirect, url_for, session, flash,
@@ -227,32 +226,6 @@ def _token_digest(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _password_reset_link(token):
-    base_url = (
-        os.environ.get("APP_BASE_URL", "").strip()
-        or os.environ.get("RENDER_EXTERNAL_URL", "").strip()
-        or request.url_root
-    )
-    try:
-        parsed = urlsplit(base_url)
-        hostname = (parsed.hostname or "").lower()
-    except ValueError as exc:
-        raise email_service.EmailConfigurationError("APP_BASE_URL is invalid.") from exc
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or (parsed.scheme != "https" and hostname not in {"localhost", "127.0.0.1", "::1"})
-    ):
-        raise email_service.EmailConfigurationError(
-            "APP_BASE_URL must be a public HTTPS origin."
-        )
-    return base_url.rstrip("/") + url_for("reset_password", token=token)
-
-
 def _otp_digest(value):
     return hmac.new(app.secret_key.encode("utf-8"), value.encode("utf-8"), hashlib.sha256).hexdigest()
 
@@ -335,106 +308,6 @@ def restore_resolved_concern_slot(conn, complaint, now=None):
         (restored, cur.lastrowid),
     )
     return bool(restored)
-
-
-def issue_login_otp(user, now=None):
-    now = now or datetime.now()
-    ttl_minutes = configured_minutes("ADMIN_OTP_TTL_MINUTES", 5)
-    resend_seconds = configured_minutes("ADMIN_OTP_RESEND_SECONDS", 60)
-    max_sends = configured_minutes("ADMIN_OTP_MAX_SENDS_PER_HOUR", 5)
-    conn = dbh.get_db()
-    conn.execute("BEGIN IMMEDIATE")
-    row = conn.execute(
-        "SELECT * FROM admin_otp_challenges WHERE user_id=?", (user["id"],)
-    ).fetchone()
-    window_started = _timestamp(row["window_started_at"]) if row else None
-    sent_at = _timestamp(row["sent_at"]) if row else None
-    if window_started and now - window_started < timedelta(hours=1):
-        sends = row["sends_in_window"]
-        next_window_seconds = max(1, int((window_started + timedelta(hours=1) - now).total_seconds()))
-    else:
-        sends = 0
-        next_window_seconds = 0
-        window_started = now
-    wait_seconds = max(0, int((sent_at + timedelta(seconds=resend_seconds) - now).total_seconds())) if sent_at else 0
-    if sends >= max_sends:
-        conn.rollback()
-        conn.close()
-        return False, next_window_seconds
-    if wait_seconds:
-        conn.rollback()
-        conn.close()
-        return False, wait_seconds
-
-    email_code = f"{secrets.randbelow(1_000_000):06d}"
-    expires_at = now + timedelta(minutes=ttl_minutes)
-    conn.execute(
-        "INSERT INTO admin_otp_challenges "
-        "(user_id, email_otp_hash, mode, expires_at, sent_at, attempts, "
-        "window_started_at, sends_in_window, used_at) "
-        "VALUES (?,?,?,?,?,0,?,?,NULL) ON CONFLICT(user_id) DO UPDATE SET "
-        "email_otp_hash=excluded.email_otp_hash, mode=excluded.mode, "
-        "expires_at=excluded.expires_at, "
-        "sent_at=excluded.sent_at, "
-        "attempts=0, window_started_at=excluded.window_started_at, "
-        "sends_in_window=excluded.sends_in_window, used_at=NULL",
-        (
-            user["id"], _otp_digest(email_code), "email_only",
-            expires_at.isoformat(timespec="seconds"), now.isoformat(timespec="seconds"),
-            window_started.isoformat(timespec="seconds"), sends + 1,
-        ),
-    )
-    conn.commit()
-    conn.close()
-
-    try:
-        message = (
-            f"Your BarangayConnect email verification code is {email_code}.\n\n"
-            f"It expires in {ttl_minutes} minutes. If you did not request this code, "
-            "you can ignore this email."
-        )
-        email_service.send_email(
-            user["email"], "BarangayConnect email verification code", message
-        )
-    except (
-        email_service.EmailConfigurationError,
-        email_service.smtplib.SMTPException,
-        OSError,
-        ValueError,
-        RuntimeError,
-    ):
-        conn = dbh.get_db()
-        conn.execute(
-            "UPDATE admin_otp_challenges SET email_otp_hash=NULL, "
-            "expires_at=?, used_at=? WHERE user_id=? AND email_otp_hash=?",
-            (
-                now.isoformat(timespec="seconds"), now.isoformat(timespec="seconds"),
-                user["id"], _otp_digest(email_code),
-            ),
-        )
-        conn.commit()
-        conn.close()
-        raise
-    return True, 0
-
-
-def otp_page_context(conn, user_id, now=None):
-    now = now or datetime.now()
-    row = conn.execute(
-        "SELECT expires_at, sent_at FROM admin_otp_challenges WHERE user_id=?",
-        (user_id,),
-    ).fetchone()
-    if not row:
-        return {"otp_expires_in": 0, "otp_resend_wait": 0}
-    expires_at = _timestamp(row["expires_at"])
-    sent_at = _timestamp(row["sent_at"])
-    resend_seconds = configured_minutes("ADMIN_OTP_RESEND_SECONDS", 60)
-    return {
-        "otp_expires_in": max(0, int((expires_at - now).total_seconds())) if expires_at else 0,
-        "otp_resend_wait": max(
-            0, int((sent_at + timedelta(seconds=resend_seconds) - now).total_seconds())
-        ) if sent_at else 0,
-    }
 
 
 def login_required(*roles):
@@ -943,6 +816,7 @@ def login():
             return redirect(url_for(f"{user['role']}_dashboard"))
     session.pop("pending_mfa_user", None)
     session.pop("pending_reset_user", None)
+    session.pop("pending_password_reset_user", None)
 
     if request.method == "POST":
         email = request.form.get("email", "").strip().lower()
@@ -970,158 +844,15 @@ def login():
             return render_template("login.html")
 
         dbh.clear_failed_logins(conn, user["id"])
-
         conn.close()
-
-        try:
-            sent, wait_seconds = issue_login_otp(user)
-        except (
-            email_service.EmailConfigurationError,
-            email_service.smtplib.SMTPException,
-            OSError,
-            ValueError,
-            RuntimeError,
-        ):
-            app.logger.exception("Could not deliver login verification code.")
-            flash(
-                "We could not deliver the verification code. Check the email configuration and try again.",
-                "error",
-            )
-            return render_template("login.html"), 503
-        challenge_conn = dbh.get_db()
-        challenge = challenge_conn.execute(
-            "SELECT expires_at, email_otp_hash "
-            "FROM admin_otp_challenges WHERE user_id=?", (user["id"],)
-        ).fetchone()
-        challenge_conn.close()
-        if not sent and (
-            not challenge
-            or not _timestamp(challenge["expires_at"])
-            or _timestamp(challenge["expires_at"]) <= datetime.now()
-            or not challenge["email_otp_hash"]
-        ):
-            flash(
-                f"Please wait {wait_seconds} seconds before requesting another verification code.",
-                "error",
-            )
-            return render_template("login.html"), 429
-        session["pending_mfa_user"] = user["id"]
-        if sent:
-            flash("An email verification code was sent.", "success")
-        else:
-            flash("A valid email code was recently sent. Check your email or wait before requesting another.", "info")
-        return redirect(url_for("verify_otp"))
+        if user["must_reset_pw"]:
+            session["pending_reset_user"] = user["id"]
+            return redirect(url_for("first_login_reset"))
+        session["user_id"] = user["id"]
+        session["role"] = user["role"]
+        return redirect(url_for(f"{user['role']}_dashboard"))
 
     return render_template("login.html")
-
-
-@app.route("/verify-otp", methods=["GET", "POST"])
-def verify_otp():
-    if "pending_mfa_user" not in session:
-        return redirect(url_for("login"))
-    user_id = session["pending_mfa_user"]
-    if request.method == "POST":
-        email_code = request.form.get("email_otp", "").strip()
-        conn = dbh.get_db()
-        conn.execute("BEGIN IMMEDIATE")
-        challenge = conn.execute(
-            "SELECT * FROM admin_otp_challenges WHERE user_id=?", (user_id,)
-        ).fetchone()
-        now = datetime.now()
-        if not challenge or challenge["used_at"] or not challenge["email_otp_hash"]:
-            conn.rollback()
-            conn.close()
-            flash("No active verification code. Request a new code.", "error")
-            return redirect(url_for("verify_otp"))
-        expires_at = _timestamp(challenge["expires_at"])
-        if not expires_at or now >= expires_at:
-            conn.rollback()
-            conn.close()
-            flash("The verification code expired. Request a new code.", "error")
-            return redirect(url_for("verify_otp"))
-        if challenge["attempts"] >= 5:
-            conn.rollback()
-            conn.close()
-            flash("Too many incorrect attempts. Request a new code.", "error")
-            return redirect(url_for("verify_otp"))
-        email_valid = bool(
-            challenge["email_otp_hash"]
-            and len(email_code) == 6 and email_code.isdigit()
-            and hmac.compare_digest(_otp_digest(email_code), challenge["email_otp_hash"])
-        )
-        if not email_valid:
-            conn.execute(
-                "UPDATE admin_otp_challenges SET attempts=attempts+1 WHERE user_id=?",
-                (user_id,),
-            )
-            conn.commit()
-            conn.close()
-            flash("Incorrect email verification code.", "error")
-            return redirect(url_for("verify_otp"))
-        verified_user = conn.execute(
-            "SELECT id, role, must_reset_pw "
-            "FROM users WHERE id=? AND status='active'",
-            (user_id,),
-        ).fetchone()
-        if not verified_user:
-            conn.execute(
-                "UPDATE admin_otp_challenges SET email_otp_hash=NULL, used_at=? WHERE user_id=?",
-                (now.isoformat(timespec="seconds"), user_id),
-            )
-            conn.commit()
-            conn.close()
-            session.pop("pending_mfa_user", None)
-            flash("This account is no longer active.", "error")
-            return redirect(url_for("login"))
-        conn.execute(
-            "UPDATE admin_otp_challenges SET email_otp_hash=NULL, used_at=? WHERE user_id=?",
-            (now.isoformat(timespec="seconds"), user_id),
-        )
-        conn.commit()
-        conn.close()
-        session.pop("pending_mfa_user", None)
-        if verified_user["must_reset_pw"]:
-            session["pending_reset_user"] = user_id
-            return redirect(url_for("first_login_reset"))
-        session["user_id"] = user_id
-        session["role"] = verified_user["role"]
-        return redirect(url_for(f"{verified_user['role']}_dashboard"))
-    conn = dbh.get_db()
-    context = otp_page_context(conn, user_id)
-    conn.close()
-    return render_template("verify_otp.html", **context)
-
-
-@app.route("/verify-otp/resend", methods=["POST"])
-def resend_admin_otp():
-    user_id = session.get("pending_mfa_user")
-    if not user_id:
-        return redirect(url_for("login"))
-    conn = dbh.get_db()
-    user = conn.execute(
-        "SELECT * FROM users WHERE id=? AND status='active'", (user_id,)
-    ).fetchone()
-    conn.close()
-    if not user:
-        session.pop("pending_mfa_user", None)
-        return redirect(url_for("login"))
-    try:
-        sent, wait_seconds = issue_login_otp(user)
-    except (
-        email_service.EmailConfigurationError,
-        email_service.smtplib.SMTPException,
-        OSError,
-        ValueError,
-        RuntimeError,
-    ):
-        app.logger.exception("Could not redeliver login verification code.")
-        flash("We could not deliver a new verification code. Check the email configuration and try again.", "error")
-    else:
-        if sent:
-            flash("A new verification code was sent. The previous code is no longer valid.", "success")
-        else:
-            flash(f"Please wait {wait_seconds} seconds before requesting another code.", "error")
-    return redirect(url_for("verify_otp"))
 
 
 @app.route("/first-login-reset", methods=["GET", "POST"])
@@ -1211,11 +942,11 @@ def forgot_password():
                 conn.close()
                 flash(
                     "If that address belongs to an active account and email delivery is available, "
-                    "a reset link will arrive shortly. "
+                    "a reset code will arrive shortly. "
                     "If no email arrives, contact the barangay office.",
                     "info",
                 )
-                return redirect(url_for("forgot_password"))
+                return redirect(url_for("reset_password_code"))
             conn.execute(
                 "INSERT INTO password_reset_limits (user_id,last_sent_at,window_started_at,sends_in_window) "
                 "VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
@@ -1226,28 +957,27 @@ def forgot_password():
                     window_started.isoformat(timespec="seconds"), sends + 1,
                 ),
             )
-            token = secrets.token_urlsafe(32)
-            now = datetime.now()
+            code = f"{secrets.randbelow(1_000_000):06d}"
             expires_at = now + timedelta(minutes=configured_minutes("PASSWORD_RESET_TTL_MINUTES", 30))
             timestamp = now.isoformat(timespec="seconds")
             conn.execute(
-                "INSERT INTO password_reset_tokens (user_id,token_hash,expires_at,created_at) "
-                "VALUES (?,?,?,?)",
+                "INSERT INTO password_reset_codes "
+                "(user_id,code_hash,expires_at,attempts,used_at,created_at) "
+                "VALUES (?,?,?,0,NULL,?) ON CONFLICT(user_id) DO UPDATE SET "
+                "code_hash=excluded.code_hash, expires_at=excluded.expires_at, "
+                "attempts=0, used_at=NULL, created_at=excluded.created_at",
                 (
-                    user["id"], _token_digest(token), expires_at.isoformat(timespec="seconds"), timestamp,
+                    user["id"], _otp_digest(code), expires_at.isoformat(timespec="seconds"), timestamp,
                 ),
             )
-            token_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             conn.commit()
         conn.close()
         if user:
             try:
-                reset_url = _password_reset_link(token)
                 email_service.send_email(
                     user["email"],
-                    "Reset your BarangayConnect password",
-                    "Use the secure link below to choose a new password:\n\n"
-                    f"{reset_url}\n\nThis link expires in "
+                    "Your BarangayConnect password reset code",
+                    f"Your password reset code is {code}.\n\nThis code expires in "
                     f"{configured_minutes('PASSWORD_RESET_TTL_MINUTES', 30)} minutes and can only be used once.\n\n"
                     "If you did not request a reset, you can ignore this email.",
                 )
@@ -1262,8 +992,9 @@ def forgot_password():
                 )
                 conn = dbh.get_db()
                 conn.execute(
-                    "UPDATE password_reset_tokens SET used_at=? WHERE id=? AND used_at IS NULL",
-                    (datetime.now().isoformat(timespec="seconds"), token_id),
+                    "UPDATE password_reset_codes SET code_hash=NULL,used_at=? "
+                    "WHERE user_id=? AND code_hash=?",
+                    (datetime.now().isoformat(timespec="seconds"), user["id"], _otp_digest(code)),
                 )
                 conn.commit()
                 conn.close()
@@ -1272,31 +1003,88 @@ def forgot_password():
                 timestamp = datetime.now().isoformat(timespec="seconds")
                 conn.execute(
                     "UPDATE password_reset_tokens SET used_at=? "
-                    "WHERE user_id=? AND id<>? AND used_at IS NULL",
-                    (timestamp, user["id"], token_id),
-                )
-                conn.execute(
-                    "UPDATE password_reset_codes SET code_hash=NULL,used_at=? "
                     "WHERE user_id=? AND used_at IS NULL",
                     (timestamp, user["id"]),
                 )
-                dbh.log_action(conn, user, "Password reset email sent")
+                dbh.log_action(conn, user, "Password reset code sent")
                 conn.commit()
                 conn.close()
         flash(
             "If that address belongs to an active account and email delivery is available, "
-            "a reset link will arrive shortly. "
+            "a reset code will arrive shortly. "
             "If no email arrives, contact the barangay office.",
             "info",
         )
-        return redirect(url_for("forgot_password"))
+        return redirect(url_for("reset_password_code"))
     return render_template("forgot_password.html")
 
 
 @app.route("/reset-password", methods=["GET", "POST"])
-def legacy_reset_password():
-    flash("Password recovery now uses secure email links. Request a new link to continue.", "info")
-    return redirect(url_for("forgot_password"))
+def reset_password_code():
+    if request.method == "GET":
+        return render_template("reset_password.html", code_reset=True)
+
+    email = request.form.get("email", "").strip().lower()
+    code = request.form.get("code", "").strip()
+    password = request.form.get("password", "")
+    confirm = request.form.get("confirm_password", "")
+    if not valid_password(password):
+        flash("Password must be at least 8 characters and include a letter and a number.", "error")
+        return render_template("reset_password.html", code_reset=True, email=email)
+    if password != confirm:
+        flash("Passwords do not match.", "error")
+        return render_template("reset_password.html", code_reset=True, email=email)
+
+    conn = dbh.get_db()
+    conn.execute("BEGIN IMMEDIATE")
+    user = conn.execute(
+        "SELECT u.*,c.code_hash,c.expires_at,c.attempts,c.used_at "
+        "FROM users u JOIN password_reset_codes c ON c.user_id=u.id "
+        "WHERE u.email=? AND u.status='active'",
+        (email,),
+    ).fetchone()
+    now = datetime.now()
+    expires_at = _timestamp(user["expires_at"]) if user else None
+    code_valid = bool(
+        user
+        and user["code_hash"]
+        and not user["used_at"]
+        and user["attempts"] < 5
+        and expires_at
+        and now < expires_at
+        and len(code) == 6
+        and code.isdigit()
+        and hmac.compare_digest(_otp_digest(code), user["code_hash"])
+    )
+    if not code_valid:
+        if user and user["code_hash"] and not user["used_at"] and user["attempts"] < 5:
+            conn.execute(
+                "UPDATE password_reset_codes SET attempts=attempts+1 WHERE user_id=?",
+                (user["id"],),
+            )
+        conn.commit()
+        conn.close()
+        flash("The reset code is invalid, expired, or has already been used.", "error")
+        return render_template("reset_password.html", code_reset=True, email=email), 400
+
+    conn.execute(
+        "UPDATE users SET password_hash=?,must_reset_pw=0 WHERE id=?",
+        (generate_password_hash(password), user["id"]),
+    )
+    timestamp = now.isoformat(timespec="seconds")
+    conn.execute(
+        "UPDATE password_reset_codes SET code_hash=NULL,used_at=? WHERE user_id=?",
+        (timestamp, user["id"]),
+    )
+    conn.execute(
+        "UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL",
+        (timestamp, user["id"]),
+    )
+    dbh.log_action(conn, user, "Password reset using emailed code")
+    conn.commit()
+    conn.close()
+    flash("Your password was changed. You can now log in.", "success")
+    return redirect(url_for("login"))
 
 
 @app.route("/reset-password/<token>", methods=["GET", "POST"])
@@ -2695,10 +2483,6 @@ def update_account_mobile(user, account_id):
         return redirect(url_for(return_endpoint))
     conn.execute(
         "UPDATE users SET contact_number=? WHERE id=?", (contact_number, account_id)
-    )
-    conn.execute(
-        "UPDATE admin_otp_challenges SET email_otp_hash=NULL, used_at=? WHERE user_id=?",
-        (datetime.now().isoformat(timespec="seconds"), account_id),
     )
     dbh.log_action(
         conn, user, "Updated account mobile number", target=account["email"],

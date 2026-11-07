@@ -38,7 +38,7 @@ the full spec as actually built and tested.
 | Version Control | GitHub | GitHub | No change |
 
 - **Scope:** Single-barangay deployment covering online submission of requests/complaints, request tracking, complaint management, resident record management, admin-controlled staff provisioning, reporting, administration, a resident-facing AI assistant, and an emergency hotlines reference page.
-- **Limitations (confirmed, unchanged from v1.0):** Single barangay only; requires internet connection; **no online payment processing**; no integration with national government databases; **no emergency hotline/dispatch** (a *static informational* hotline list is in scope — see §3.9 — but live dispatch/routing is not); SMS notifications optional and dependent on third-party services. SMTP configuration is required at deployment for email OTP and password-reset delivery.
+- **Limitations (confirmed, unchanged from v1.0):** Single barangay only; requires internet connection; **no online payment processing**; no integration with national government databases; **no emergency hotline/dispatch** (a *static informational* hotline list is in scope — see §3.9 — but live dispatch/routing is not); SMS notifications optional and dependent on third-party services. SMTP configuration is required at deployment for password-reset code delivery.
 
 ---
 
@@ -64,7 +64,7 @@ the full spec as actually built and tested.
 - Client-side validation for email format and password strength (min. 8 characters, at least one letter and one digit).
 - `POST /register` — creates a Resident account after validating unique email.
 - `POST /login` — validates credentials, checks role, issues a session.
-- `POST /forgot-password` — sends a time-limited, single-use password-reset link by SMTP to the registered address of an active resident, staff, or administrator account. The token is stored as a SHA-256 digest.
+- `POST /forgot-password` — sends a time-limited, single-use password-reset code by SMTP to the registered address of an active resident, staff, or administrator account. Only a keyed digest of the code is stored.
 - Passwords hashed (PBKDF2 via Werkzeug) before storage; account lockout for 15 minutes after 5 failed login attempts.
 
 ### 3.2 Admin & Staff Account Provisioning (PROV-02)
@@ -75,7 +75,7 @@ the full spec as actually built and tested.
 - `POST /admin/staff/<id>/toggle` — activates/deactivates a staff account.
 - `POST /admin/staff/<id>/reset-password` — Admin resets a staff member's password directly.
 - `POST /admin/administrators` — **Founding-Administrator-only** *(v2.0 change)*; creates an additional Administrator account with a required recovery email.
-- New staff must set a permanent password on first login; no self-service "forgot password" flow for Staff (Admin handles recovery). Admin login requires a time-limited, one-time email OTP since this role has full system access.
+- New staff must set a permanent password on first login; no self-service "forgot password" flow for Staff (Admin handles recovery). Login uses the account email and password without an email verification code.
 
 ### 3.3 Document Request Submission (REQ-03) — *expanded in v2.0*
 - **Document type:** Barangay Clearance, Certificate of Residency, Business Clearance, Certificate of Indigency, Other.
@@ -144,7 +144,7 @@ the full spec as actually built and tested.
 *(unchanged from v1.0 unless noted)*
 
 - **Performance:** Response time below 3 seconds; supports multiple concurrent users.
-- **Authentication & Account Recovery:** MFA (time-limited email OTP with resend rate limits) required for Administrator login; password policy (min. 8 characters, letter + digit) enforced at registration and password-change for all roles; active accounts use a self-service, single-use emailed password reset link with a configurable expiry and request rate limits; rate limiting/account lockout after repeated failed attempts on any role.
+- **Authentication & Account Recovery:** Login uses email and password; password policy (min. 8 characters, letter + digit) enforced at registration and password-change for all roles; active accounts use a self-service, single-use emailed password reset code with a configurable expiry, attempt limit, and request rate limits; rate limiting/account lockout after repeated failed login attempts on any role.
 - **Input & File Validation:** All form fields sanitized and validated server-side (parameterized SQL throughout — no string-built queries); file uploads restricted by type (JPG, PNG, PDF only) and maximum size (5MB); uploaded file content validated against its declared type via magic-byte inspection to block disguised malicious files.
 - **Audit Logs & Accountability:** Audit logs are append-only (the application layer never issues `UPDATE`/`DELETE` against the audit table), including for Administrator actions; logs capture who performed an action, what was changed, and when — especially staff/admin account creation, edits, and status changes on requests/complaints.
 - **Data Privacy:** Aligns with the Philippine Data Privacy Act (RA 10173); personal data access limited to what each role needs.
@@ -162,4 +162,4 @@ the full spec as actually built and tested.
 - Emergency dispatch/live call routing (a static hotline reference page is in scope — §3.9).
 - Integration with national government databases.
 - Real SMS delivery (optional, third-party-dependent, not implemented in this build).
-- Email OTP and password-reset delivery require SMTP credentials and public application URL to be configured through environment variables.
+- Password-reset code delivery requires SMTP credentials to be configured through environment variables.

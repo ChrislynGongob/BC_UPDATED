@@ -29,13 +29,12 @@ the PRD is already implemented and working here.
   any time from My Profile, along with contact number.
 - **Admin-only staff & administrator provisioning** (PROV-02) — no public staff/admin
   signup route exists anywhere; staff get a temp password and must set a permanent
-  one on first login; sign-in uses a time-limited email OTP with resend limits,
-  server-side verification, and one-time use. No SMS OTP or paid SMS provider is
-  required.
+  one on first login. Login uses the account email and password without an email
+  verification step.
 - **Email-based password recovery** — active residents, staff, and administrators
-  receive a time-limited, single-use password reset link at their registered
-  email address. Only a SHA-256 digest of each cryptographically random token is
-  stored; passwords continue to use Werkzeug's password hashing.
+  receive a time-limited, single-use password reset code at their registered
+  email address. Only a keyed digest of the code is stored; passwords continue
+  to use Werkzeug's password hashing.
 - **Document requests** (REQ-03) — **Certificate of Indigency**,
   **Certificate of Residency** and **Barangay Clearance** are offered (simplified
   from the original five types per the client's request); realistic barangay-style form (civil status,
@@ -181,8 +180,7 @@ the PRD is already implemented and working here.
   UI), 403/404 pages, resident data scoped to its owner.
 
 Not implemented (out of scope per the PRD's own "Limitations" section): SMS and
-payment processing. Real password-reset and sign-in OTP email delivery require
-the SMTP settings below.
+payment processing. Password-reset code delivery requires the SMTP settings below.
 
 ## Requirements
 
@@ -225,7 +223,6 @@ Remove-Item Env:DEMO_ADMIN_PASSWORD, Env:DEMO_STAFF_PASSWORD, Env:DEMO_RESIDENT_
 #
 #    Windows PowerShell example:
 #    $env:SECRET_KEY = "replace-with-a-long-random-secret"
-#    $env:APP_BASE_URL = "https://your-public-barangayconnect-domain"
 #    $env:SMTP_HOST = "smtp.example.com"
 #    $env:SMTP_PORT = "587"
 #    $env:SMTP_USERNAME = "your-smtp-username"
@@ -233,10 +230,10 @@ Remove-Item Env:DEMO_ADMIN_PASSWORD, Env:DEMO_STAFF_PASSWORD, Env:DEMO_RESIDENT_
 #    $env:SMTP_FROM = "BarangayConnect <no-reply@example.com>"
 #    $env:SMTP_USE_TLS = "true"
 #
-#    Configure APP_BASE_URL to the public HTTPS origin and set valid SMTP
-#    credentials before deploying. SMTP placeholders do not deliver email.
+#    Set valid SMTP credentials before deploying to enable password reset
+#    code delivery. SMTP placeholders do not deliver email.
 #    Configure optional expiration/resend settings from .env.example as needed.
-#    Sign-in uses email codes only; no SMS provider configuration is needed.
+#    Sign-in uses email and password; no SMS provider configuration is needed.
 #    An admin can
 #    update existing users' numbers from Admin > Residents, Staff, and
 #    Administrators; staff can update resident numbers from Staff > Residents.
@@ -253,10 +250,10 @@ Open **http://127.0.0.1:5000** in your browser.
 
 `setup_founding_admin.py` always uses `ralphpatrickga@gmail.com` for the
 Founding Admin login and recovery email. It hashes the administrator-supplied
-initial password, requires a change after email-OTP verification, and records
+initial password, requires a change after the first login, and records
 the setup in the audit log. The Founding Admin email is also the address used
-for login and admin email OTP. Admin password recovery is sent to the stored
-recovery email; after setup, that is the Founding Admin email.
+for login. Admin password recovery is sent to the stored recovery email; after
+setup, that is the Founding Admin email.
 
 `seed.py` is destructive demo tooling: it deletes and rebuilds the local
 database. Use it only when you intentionally want to discard all current data.
@@ -269,7 +266,7 @@ log in as an Admin and go to Settings — no code editing needed.
 
 | Role     | Email                             | Password source | Notes |
 |----------|------------------------------------|-----------------|-------|
-| Admin    | admin@barangayconnect.ph          | `DEMO_ADMIN_PASSWORD` | Regular Admin; login requires email OTP. SMTP must be configured. |
+| Admin    | admin@barangayconnect.ph          | `DEMO_ADMIN_PASSWORD` | Regular Admin; sign in with email and password. |
 | Staff    | marco.staff@barangayconnect.ph    | `DEMO_STAFF_PASSWORD` | Treasurer |
 | Staff    | ramon.staff@barangayconnect.ph    | `DEMO_STAFF_PASSWORD` | Secretary |
 | Staff    | liza.staff@barangayconnect.ph     | `DEMO_STAFF_PASSWORD` | BPSO |
@@ -279,7 +276,7 @@ log in as an Admin and go to Settings — no code editing needed.
 
 The demo passwords are supplied as environment variables and are not printed.
 The Founding Admin is `ralphpatrickga@gmail.com`; configure its initial password
-with `FOUNDING_ADMIN_PASSWORD` and change it after first OTP-verified login.
+with `FOUNDING_ADMIN_PASSWORD` and change it after first login.
 
 
 You can also register a brand-new resident account from the login page — staff and
