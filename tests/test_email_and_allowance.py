@@ -146,12 +146,51 @@ class SecurityAndAllowanceTests(unittest.TestCase):
                 "sender": {"name": "BarangayConnect", "email": "no-reply@example.test"},
                 "to": [{"email": "resident@example.test"}],
                 "subject": "Test subject",
-                "textContent": "Plain text",
-                "htmlContent": "<p>HTML content</p>",
+                "textContent": (
+                    "Plain text\n\n"
+                    "This is an automated message. Please do not reply to this email."
+                ),
+                "htmlContent": (
+                    "<p>HTML content</p>"
+                    "<p>This is an automated message. Please do not reply to this email.</p>"
+                ),
             },
             headers={"api-key": "brevo-test-secret", "accept": "application/json"},
             timeout=(5, 15),
         )
+
+    def test_brevo_reply_to_is_optional_and_validated(self):
+        config = {
+            "EMAIL_PROVIDER": "brevo",
+            "BREVO_API_KEY": "brevo-test-secret",
+            "SMTP_FROM": "verified-sender@example.test",
+            "BREVO_REPLY_TO": "helpdesk@example.test",
+        }
+        response = MagicMock(status_code=201)
+        with patch.dict(os.environ, config, clear=True), patch.object(
+            A.email_service.requests, "post", return_value=response
+        ) as post:
+            A.email_service.send_email("resident@example.test", "Subject", "Body")
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(payload["replyTo"], {"email": "helpdesk@example.test"})
+        self.assertEqual(
+            payload["sender"],
+            {"name": "BarangayConnect", "email": "verified-sender@example.test"},
+        )
+        self.assertIn("This is an automated message.", payload["textContent"])
+
+        config["BREVO_REPLY_TO"] = "invalid-address"
+        with patch.dict(os.environ, config, clear=True), patch.object(
+            A.email_service.requests, "post"
+        ) as post:
+            with self.assertRaisesRegex(
+                A.email_service.EmailConfigurationError, "BREVO_REPLY_TO"
+            ):
+                A.email_service.send_email(
+                    "resident@example.test", "Subject", "Body"
+                )
+        post.assert_not_called()
 
     def test_brevo_service_requires_api_key(self):
         config = {

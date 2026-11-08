@@ -21,7 +21,21 @@ class EmailDeliveryError(OSError):
 
 _BREVO_URL = "https://api.brevo.com/v3/smtp/email"
 _BREVO_TIMEOUT = (5, 15)
+_AUTOMATED_FOOTER = "This is an automated message. Please do not reply to this email."
 _logger = logging.getLogger(__name__)
+
+
+def _configured_email_address(value, setting_name):
+    addresses = getaddresses([value])
+    address = addresses[0][1] if len(addresses) == 1 else ""
+    if (
+        not address
+        or "\r" in value
+        or "\n" in value
+        or not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", address)
+    ):
+        raise EmailConfigurationError(f"{setting_name} must contain a valid email address.")
+    return address
 
 
 def _send_brevo_email(recipient, subject, body, html_body=None):
@@ -30,24 +44,24 @@ def _send_brevo_email(recipient, subject, body, html_body=None):
         raise EmailConfigurationError("BREVO_API_KEY must be configured for Brevo.")
 
     sender_config = os.environ.get("SMTP_FROM", "").strip()
-    addresses = getaddresses([sender_config])
-    sender_email = addresses[0][1] if len(addresses) == 1 else ""
-    if (
-        not sender_email
-        or "\r" in sender_config
-        or "\n" in sender_config
-        or not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", sender_email)
-    ):
-        raise EmailConfigurationError("SMTP_FROM must contain a valid sender email for Brevo.")
+    sender_email = _configured_email_address(sender_config, "SMTP_FROM")
 
     payload = {
         "sender": {"name": "BarangayConnect", "email": sender_email},
         "to": [{"email": recipient}],
         "subject": subject,
-        "textContent": body,
+        "textContent": f"{body.rstrip()}\n\n{_AUTOMATED_FOOTER}",
     }
+    reply_to = os.environ.get("BREVO_REPLY_TO", "").strip()
+    if reply_to:
+        payload["replyTo"] = {
+            "email": _configured_email_address(reply_to, "BREVO_REPLY_TO")
+        }
     if html_body is not None:
-        payload["htmlContent"] = html_body
+        payload["htmlContent"] = (
+            f"{html_body.rstrip()}"
+            f'<p>{_AUTOMATED_FOOTER}</p>'
+        )
 
     try:
         response = requests.post(
@@ -112,7 +126,7 @@ def send_email(recipient, subject, body, html_body=None):
     message["From"] = sender
     message["To"] = recipient
     message["Subject"] = subject
-    message.set_content(body)
+    message.set_content(f"{body.rstrip()}\n\n{_AUTOMATED_FOOTER}")
 
     smtp_class = smtplib.SMTP_SSL if use_ssl else smtplib.SMTP
     context = ssl.create_default_context()

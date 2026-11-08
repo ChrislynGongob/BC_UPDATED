@@ -229,13 +229,17 @@ Remove-Item Env:DEMO_ADMIN_PASSWORD, Env:DEMO_STAFF_PASSWORD, Env:DEMO_RESIDENT_
 #    $env:SMTP_PORT = "587"
 #    $env:SMTP_USERNAME = "your-smtp-username"
 #    $env:SMTP_PASSWORD = "your-smtp-password"
-#    $env:SMTP_FROM = "BarangayConnect <no-reply@example.com>"
+#    $env:SMTP_FROM = "<your currently verified sender email>"
 #    $env:SMTP_USE_TLS = "true"
 #
 #    Render Brevo requires:
 #    EMAIL_PROVIDER=brevo
 #    BREVO_API_KEY=<Brevo API key>
-#    SMTP_FROM=<verified sender email>
+#    SMTP_FROM=<currently verified sender email>
+#    BREVO_REPLY_TO=<optional reply-to email>
+#    The sender name is BarangayConnect. BREVO_REPLY_TO is optional and is sent
+#    through Brevo's replyTo API field only when configured. All app emails
+#    include an automated no-reply footer; no unverified sender is substituted.
 #    API acceptance confirms the request was accepted by Brevo, not that it
 #    reached a recipient's inbox. SMTP placeholders do not deliver email.
 #    Configure optional expiration/resend settings from .env.example as needed.
