@@ -217,12 +217,14 @@ Remove-Item Env:DEMO_ADMIN_PASSWORD, Env:DEMO_STAFF_PASSWORD, Env:DEMO_RESIDENT_
 #    updates the existing Founding Admin row in place and refuses ambiguous
 #    accounts or an email already owned by someone else.
 #
-# 6. Set email environment variables before running the app. Copy the
-#    placeholders in .env.example into your shell or deployment environment.
-#    Do not commit real SMTP credentials.
+# 6. Configure email delivery. For local SMTP, set EMAIL_PROVIDER=smtp (or
+#    leave it unset) and provide the SMTP settings from .env.example. On Render,
+#    set EMAIL_PROVIDER=brevo, BREVO_API_KEY, and SMTP_FROM to the verified
+#    sender address; Brevo mode does not use SMTP connection settings.
 #
-#    Windows PowerShell example:
+#    Local SMTP PowerShell example:
 #    $env:SECRET_KEY = "replace-with-a-long-random-secret"
+#    $env:EMAIL_PROVIDER = "smtp"
 #    $env:SMTP_HOST = "smtp.example.com"
 #    $env:SMTP_PORT = "587"
 #    $env:SMTP_USERNAME = "your-smtp-username"
@@ -230,8 +232,12 @@ Remove-Item Env:DEMO_ADMIN_PASSWORD, Env:DEMO_STAFF_PASSWORD, Env:DEMO_RESIDENT_
 #    $env:SMTP_FROM = "BarangayConnect <no-reply@example.com>"
 #    $env:SMTP_USE_TLS = "true"
 #
-#    Set valid SMTP credentials before deploying to enable password reset
-#    code delivery. SMTP placeholders do not deliver email.
+#    Render Brevo requires:
+#    EMAIL_PROVIDER=brevo
+#    BREVO_API_KEY=<Brevo API key>
+#    SMTP_FROM=<verified sender email>
+#    API acceptance confirms the request was accepted by Brevo, not that it
+#    reached a recipient's inbox. SMTP placeholders do not deliver email.
 #    Configure optional expiration/resend settings from .env.example as needed.
 #    Sign-in uses email and password; no SMS provider configuration is needed.
 #    An admin can

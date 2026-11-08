@@ -109,7 +109,9 @@ class SecurityAndAllowanceTests(unittest.TestCase):
         }
         smtp = MagicMock()
         smtp.__enter__.return_value = smtp
-        with patch.dict(os.environ, config), patch.object(
+        with patch.dict(os.environ, config, clear=True), patch.object(
+            A.email_service.ssl, "create_default_context", return_value=MagicMock()
+        ), patch.object(
             A.email_service.smtplib, "SMTP", return_value=smtp
         ) as smtp_constructor:
             A.email_service.send_email("resident@example.test", "Test subject", "Test body")
@@ -120,6 +122,186 @@ class SecurityAndAllowanceTests(unittest.TestCase):
         self.assertEqual(message["To"], "resident@example.test")
         self.assertEqual(message["Subject"], "Test subject")
         self.assertIn("Test body", message.get_content())
+
+    def test_brevo_service_sends_text_and_html_and_needs_no_smtp_settings(self):
+        config = {
+            "EMAIL_PROVIDER": "brevo",
+            "BREVO_API_KEY": "brevo-test-secret",
+            "SMTP_FROM": "BarangayConnect <no-reply@example.test>",
+        }
+        response = MagicMock(status_code=201)
+        with patch.dict(os.environ, config, clear=True), patch.object(
+            A.email_service.requests, "post", return_value=response
+        ) as post:
+            A.email_service.send_email(
+                "resident@example.test",
+                "Test subject",
+                "Plain text",
+                html_body="<p>HTML content</p>",
+            )
+
+        post.assert_called_once_with(
+            "https://api.brevo.com/v3/smtp/email",
+            json={
+                "sender": {"name": "BarangayConnect", "email": "no-reply@example.test"},
+                "to": [{"email": "resident@example.test"}],
+                "subject": "Test subject",
+                "textContent": "Plain text",
+                "htmlContent": "<p>HTML content</p>",
+            },
+            headers={"api-key": "brevo-test-secret", "accept": "application/json"},
+            timeout=(5, 15),
+        )
+
+    def test_brevo_service_requires_api_key(self):
+        config = {
+            "EMAIL_PROVIDER": "brevo",
+            "SMTP_FROM": "no-reply@example.test",
+        }
+        with patch.dict(os.environ, config, clear=True):
+            with self.assertRaisesRegex(
+                A.email_service.EmailConfigurationError, "BREVO_API_KEY"
+            ):
+                A.email_service.send_email("resident@example.test", "Subject", "Body")
+
+    def test_brevo_service_rejects_invalid_sender(self):
+        config = {
+            "EMAIL_PROVIDER": "brevo",
+            "BREVO_API_KEY": "brevo-test-secret",
+            "SMTP_FROM": "not-an-email",
+        }
+        with patch.dict(os.environ, config, clear=True), patch.object(
+            A.email_service.requests, "post"
+        ) as post:
+            with self.assertRaisesRegex(
+                A.email_service.EmailConfigurationError, "SMTP_FROM"
+            ):
+                A.email_service.send_email("resident@example.test", "Subject", "Body")
+        post.assert_not_called()
+
+    def test_brevo_authentication_error_is_safe_and_not_accepted(self):
+        config = {
+            "EMAIL_PROVIDER": "brevo",
+            "BREVO_API_KEY": "brevo-test-secret",
+            "SMTP_FROM": "no-reply@example.test",
+        }
+        response = MagicMock(status_code=401)
+        with patch.dict(os.environ, config, clear=True), patch.object(
+            A.email_service.requests, "post", return_value=response
+        ):
+            with self.assertLogs("email_service", level="ERROR") as logs:
+                with self.assertRaises(A.email_service.EmailDeliveryError) as raised:
+                    A.email_service.send_email(
+                        "resident@example.test", "Subject", "sensitive-otp-123456"
+                    )
+
+        self.assertEqual(raised.exception.status_code, 401)
+        self.assertNotIn("brevo-test-secret", "\n".join(logs.output))
+        self.assertNotIn("123456", "\n".join(logs.output))
+        self.assertIn("status=401", "\n".join(logs.output))
+
+    def test_brevo_authentication_failure_keeps_reset_response_generic(self):
+        email = "brevo-auth-failure@example.test"
+        user_id = self.create_resident(email)
+        config = {
+            "EMAIL_PROVIDER": "brevo",
+            "BREVO_API_KEY": "brevo-test-secret",
+            "SMTP_FROM": "no-reply@example.test",
+        }
+        response = MagicMock(status_code=401)
+        client = A.app.test_client()
+        with patch.dict(os.environ, config, clear=True), patch.object(
+            A.email_service.requests, "post", return_value=response
+        ) as post, self.assertLogs(level="ERROR") as logs:
+            failed = client.post(
+                "/forgot-password", data={"email": email}, follow_redirects=True
+            )
+        unknown = client.post(
+            "/forgot-password",
+            data={"email": "no-such-brevo-user@example.test"},
+            follow_redirects=True,
+        )
+
+        payload = post.call_args.kwargs["json"]
+        code = re.search(r"code is (\d{6})", payload["textContent"]).group(1)
+        output = "\n".join(logs.output)
+        self.assertEqual(failed.get_data(as_text=True), unknown.get_data(as_text=True))
+        self.assertNotIn("brevo-test-secret", output)
+        self.assertNotIn(code, output)
+        self.assertIn("status=401", output)
+        conn = dbh.get_db()
+        reset_code = conn.execute(
+            "SELECT code_hash, used_at FROM password_reset_codes WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+        conn.close()
+        self.assertIsNone(reset_code["code_hash"])
+        self.assertIsNotNone(reset_code["used_at"])
+
+    def test_brevo_timeout_and_network_errors_are_safe(self):
+        config = {
+            "EMAIL_PROVIDER": "brevo",
+            "BREVO_API_KEY": "brevo-test-secret",
+            "SMTP_FROM": "no-reply@example.test",
+        }
+        failures = (
+            A.email_service.requests.exceptions.Timeout("sensitive-otp-123456"),
+            A.email_service.requests.exceptions.ConnectionError("brevo-test-secret"),
+        )
+        with patch.dict(os.environ, config, clear=True):
+            for failure in failures:
+                with self.subTest(failure=type(failure).__name__), patch.object(
+                    A.email_service.requests, "post", side_effect=failure
+                ):
+                    with self.assertLogs("email_service", level="ERROR") as logs:
+                        with self.assertRaises(A.email_service.EmailDeliveryError):
+                            A.email_service.send_email(
+                                "resident@example.test", "Subject", "Body"
+                            )
+                    output = "\n".join(logs.output)
+                    self.assertNotIn("brevo-test-secret", output)
+                    self.assertNotIn("123456", output)
+
+    def test_unset_provider_preserves_smtp_delivery(self):
+        config = {
+            "SMTP_HOST": "smtp.example.test",
+            "SMTP_FROM": "no-reply@example.test",
+        }
+        smtp = MagicMock()
+        smtp.__enter__.return_value = smtp
+        with patch.dict(os.environ, config, clear=True), patch.object(
+            A.email_service.ssl, "create_default_context", return_value=MagicMock()
+        ), patch.object(
+            A.email_service.smtplib, "SMTP", return_value=smtp
+        ) as smtp_constructor:
+            A.email_service.send_email("resident@example.test", "Subject", "Body")
+        smtp_constructor.assert_called_once_with("smtp.example.test", 587, timeout=15)
+        smtp.send_message.assert_called_once()
+
+    def test_brevo_password_reset_logs_no_api_key_or_reset_code(self):
+        config = {
+            "EMAIL_PROVIDER": "brevo",
+            "BREVO_API_KEY": "brevo-test-secret",
+            "SMTP_FROM": "no-reply@example.test",
+        }
+        self.create_resident("brevo-reset-log@example.test")
+        response = MagicMock(status_code=201)
+        with patch.dict(os.environ, config, clear=True), patch.object(
+            A.email_service.requests, "post", return_value=response
+        ) as post:
+            with self.assertLogs("email_service", level="INFO") as logs:
+                result = A.app.test_client().post(
+                    "/forgot-password",
+                    data={"email": "brevo-reset-log@example.test"},
+                )
+
+        self.assertEqual(result.status_code, 302)
+        payload = post.call_args.kwargs["json"]
+        code = re.search(r"code is (\d{6})", payload["textContent"]).group(1)
+        output = "\n".join(logs.output)
+        self.assertNotIn("brevo-test-secret", output)
+        self.assertNotIn(code, output)
+        self.assertIn("inbox delivery is not confirmed", output)
 
     def test_smtp_service_rejects_partial_auth_configuration(self):
         config = {

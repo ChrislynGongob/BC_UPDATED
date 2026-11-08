@@ -1,14 +1,91 @@
+import logging
 import os
+import re
 import smtplib
 import ssl
 from email.message import EmailMessage
+from email.utils import getaddresses
+
+import requests
 
 
 class EmailConfigurationError(RuntimeError):
     pass
 
 
-def send_email(recipient, subject, body):
+class EmailDeliveryError(OSError):
+    def __init__(self, message, status_code=None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+_BREVO_URL = "https://api.brevo.com/v3/smtp/email"
+_BREVO_TIMEOUT = (5, 15)
+_logger = logging.getLogger(__name__)
+
+
+def _send_brevo_email(recipient, subject, body, html_body=None):
+    api_key = os.environ.get("BREVO_API_KEY", "").strip()
+    if not api_key:
+        raise EmailConfigurationError("BREVO_API_KEY must be configured for Brevo.")
+
+    sender_config = os.environ.get("SMTP_FROM", "").strip()
+    addresses = getaddresses([sender_config])
+    sender_email = addresses[0][1] if len(addresses) == 1 else ""
+    if (
+        not sender_email
+        or "\r" in sender_config
+        or "\n" in sender_config
+        or not re.fullmatch(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+", sender_email)
+    ):
+        raise EmailConfigurationError("SMTP_FROM must contain a valid sender email for Brevo.")
+
+    payload = {
+        "sender": {"name": "BarangayConnect", "email": sender_email},
+        "to": [{"email": recipient}],
+        "subject": subject,
+        "textContent": body,
+    }
+    if html_body is not None:
+        payload["htmlContent"] = html_body
+
+    try:
+        response = requests.post(
+            _BREVO_URL,
+            json=payload,
+            headers={"api-key": api_key, "accept": "application/json"},
+            timeout=_BREVO_TIMEOUT,
+        )
+    except requests.exceptions.RequestException as exc:
+        _logger.error(
+            "Brevo API request failed (type=%s).",
+            type(exc).__name__,
+        )
+        raise EmailDeliveryError("Brevo API request failed.") from exc
+
+    if not 200 <= response.status_code < 300:
+        _logger.error(
+            "Brevo API rejected transactional email (status=%s).",
+            response.status_code,
+        )
+        raise EmailDeliveryError(
+            "Brevo API rejected the email request.",
+            status_code=response.status_code,
+        )
+
+    _logger.info(
+        "Brevo accepted transactional email request (status=%s); inbox delivery is not confirmed.",
+        response.status_code,
+    )
+
+
+def send_email(recipient, subject, body, html_body=None):
+    provider = os.environ.get("EMAIL_PROVIDER", "").strip().lower() or "smtp"
+    if provider == "brevo":
+        return _send_brevo_email(recipient, subject, body, html_body)
+    if provider != "smtp":
+        raise EmailConfigurationError("EMAIL_PROVIDER must be either 'brevo' or 'smtp'.")
+
     host = os.environ.get("SMTP_HOST", "").strip()
     sender = os.environ.get("SMTP_FROM", "").strip()
     if not host or not sender:
