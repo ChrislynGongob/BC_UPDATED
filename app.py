@@ -941,9 +941,8 @@ def forgot_password():
                 conn.rollback()
                 conn.close()
                 flash(
-                    "If that address belongs to an active account and email delivery is available, "
-                    "a reset code will arrive shortly. "
-                    "If no email arrives, contact the barangay office.",
+                    "Password reset instructions will be sent to your inbox. "
+                    "Please check your email to continue.",
                     "info",
                 )
                 return redirect(url_for("reset_password_code"))
@@ -1010,9 +1009,8 @@ def forgot_password():
                 conn.commit()
                 conn.close()
         flash(
-            "If that address belongs to an active account and email delivery is available, "
-            "a reset code will arrive shortly. "
-            "If no email arrives, contact the barangay office.",
+            "Password reset instructions will be sent to your inbox. "
+            "Please check your email to continue.",
             "info",
         )
         return redirect(url_for("reset_password_code"))

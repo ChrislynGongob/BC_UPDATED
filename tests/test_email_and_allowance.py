@@ -433,7 +433,11 @@ class SecurityAndAllowanceTests(unittest.TestCase):
                 "/forgot-password", data={"email": email}, follow_redirects=True
             )
         self.assertEqual(send_email.call_count, 1)
-        self.assertIn("If that address belongs to an active account", limited.get_data(as_text=True))
+        self.assertIn(
+            "Password reset instructions will be sent to your inbox. "
+            "Please check your email to continue.",
+            limited.get_data(as_text=True),
+        )
 
     def test_unknown_email_and_smtp_failure_have_generic_response(self):
         client = A.app.test_client()
