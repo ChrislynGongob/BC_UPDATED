@@ -321,25 +321,33 @@ class SecurityAndAllowanceTests(unittest.TestCase):
         email = "reset-flow@example.test"
         resident_id = self.create_resident(email)
         client = A.app.test_client()
-        with patch.object(A.email_service, "send_email") as send_email:
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            A.email_service, "send_email"
+        ) as send_email:
             response = client.post("/forgot-password", data={"email": email})
             self.assertEqual(response.status_code, 302)
             confirmation = client.get(response.location)
         self.assertIn("six-digit code", confirmation.get_data(as_text=True))
         send_email.assert_called_once()
         body = send_email.call_args.args[2]
+        self.assertIn("This code expires in 5 minutes", body)
         code = re.search(r"code is (\d{6})", body).group(1)
         self.assertEqual(send_email.call_args.args[0], email)
         conn = dbh.get_db()
         stored = conn.execute(
-            "SELECT code_hash, expires_at, attempts, used_at FROM password_reset_codes WHERE user_id=?",
+            "SELECT code_hash, expires_at, attempts, used_at, created_at "
+            "FROM password_reset_codes WHERE user_id=?",
             (resident_id,),
         ).fetchone()
         self.assertNotEqual(stored["code_hash"], code)
         self.assertEqual(stored["code_hash"], A._otp_digest(code))
         self.assertEqual(stored["attempts"], 0)
         self.assertIsNone(stored["used_at"])
-        self.assertGreater(datetime.fromisoformat(stored["expires_at"]), datetime.now())
+        self.assertEqual(
+            datetime.fromisoformat(stored["expires_at"])
+            - datetime.fromisoformat(stored["created_at"]),
+            timedelta(minutes=5),
+        )
         conn.close()
 
         self.assertEqual(client.get("/reset-password").status_code, 200)

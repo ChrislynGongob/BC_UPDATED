@@ -957,7 +957,7 @@ def forgot_password():
                 ),
             )
             code = f"{secrets.randbelow(1_000_000):06d}"
-            expires_at = now + timedelta(minutes=configured_minutes("PASSWORD_RESET_TTL_MINUTES", 30))
+            expires_at = now + timedelta(minutes=configured_minutes("PASSWORD_RESET_TTL_MINUTES", 5))
             timestamp = now.isoformat(timespec="seconds")
             conn.execute(
                 "INSERT INTO password_reset_codes "
@@ -977,7 +977,7 @@ def forgot_password():
                     user["email"],
                     "Your BarangayConnect password reset code",
                     f"Your password reset code is {code}.\n\nThis code expires in "
-                    f"{configured_minutes('PASSWORD_RESET_TTL_MINUTES', 30)} minutes and can only be used once.\n\n"
+                    f"{configured_minutes('PASSWORD_RESET_TTL_MINUTES', 5)} minutes and can only be used once.\n\n"
                     "If you did not request a reset, you can ignore this email.",
                 )
             except (email_service.EmailConfigurationError, email_service.smtplib.SMTPException, OSError, ValueError) as exc:
