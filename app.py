@@ -4,6 +4,7 @@ import csv
 import io
 import hashlib
 import hmac
+import math
 import secrets
 import threading
 from functools import wraps
@@ -193,7 +194,7 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE + 1024
 
 @app.after_request
 def _protect_password_reset_response(response):
-    if request.endpoint == "reset_password":
+    if request.endpoint in {"forgot_password", "reset_password", "reset_password_code"}:
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
     return response
@@ -220,6 +221,25 @@ def configured_minutes(name, default, minimum=1):
 
 def _timestamp(value):
     return datetime.fromisoformat(value) if value else None
+
+
+def _set_password_reset_resend_deadline(seconds, start=None):
+    if "user_id" not in session:
+        session.permanent = True
+    deadline = (start or datetime.now()) + timedelta(seconds=max(0, seconds))
+    session["password_reset_resend_until"] = deadline.isoformat(timespec="microseconds")
+
+
+def _password_reset_resend_remaining_ms():
+    deadline = _timestamp(session.get("password_reset_resend_until"))
+    if not deadline:
+        return 0
+    return max(0, math.ceil((deadline - datetime.now()).total_seconds() * 1000))
+
+
+def _password_reset_countdown_label(remaining_ms):
+    seconds = max(0, math.ceil(remaining_ms / 1000) - 1)
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
 
 
 def _token_digest(value):
@@ -912,7 +932,15 @@ def forgot_password():
         email = request.form.get("email", "").strip().lower()
         if not valid_email(email):
             flash("Please enter a valid email address.", "error")
-            return render_template("forgot_password.html", email=email), 400
+            remaining_ms = _password_reset_resend_remaining_ms()
+            return render_template(
+                "forgot_password.html",
+                email=email,
+                resend_remaining_ms=remaining_ms,
+                resend_countdown=_password_reset_countdown_label(remaining_ms),
+            ), 400
+        min_wait = configured_minutes("PASSWORD_RESET_RESEND_SECONDS", 60)
+        _set_password_reset_resend_deadline(min_wait)
         conn = dbh.get_db()
         conn.execute("BEGIN IMMEDIATE")
         user = conn.execute(
@@ -931,13 +959,14 @@ def forgot_password():
             else:
                 sends = 0
                 window_started = now
-            min_wait = configured_minutes("PASSWORD_RESET_RESEND_SECONDS", 60)
-            max_sends = configured_minutes("PASSWORD_RESET_MAX_SENDS_PER_HOUR", 5)
+            max_sends = configured_minutes("PASSWORD_RESET_MAX_SENDS_PER_HOUR", 30)
             wait_seconds = (
-                max(0, int((last_sent + timedelta(seconds=min_wait) - now).total_seconds()))
+                max(0, math.ceil((last_sent + timedelta(seconds=min_wait) - now).total_seconds()))
                 if last_sent else 0
             )
             if sends >= max_sends or wait_seconds:
+                if wait_seconds and sends < max_sends:
+                    _set_password_reset_resend_deadline(min_wait, start=last_sent)
                 conn.rollback()
                 conn.close()
                 flash(
@@ -952,10 +981,11 @@ def forgot_password():
                 "last_sent_at=excluded.last_sent_at, window_started_at=excluded.window_started_at, "
                 "sends_in_window=excluded.sends_in_window",
                 (
-                    user["id"], now.isoformat(timespec="seconds"),
-                    window_started.isoformat(timespec="seconds"), sends + 1,
+                    user["id"], now.isoformat(timespec="microseconds"),
+                    window_started.isoformat(timespec="microseconds"), sends + 1,
                 ),
             )
+            _set_password_reset_resend_deadline(min_wait, start=now)
             code = f"{secrets.randbelow(1_000_000):06d}"
             expires_at = now + timedelta(minutes=configured_minutes("PASSWORD_RESET_TTL_MINUTES", 5))
             timestamp = now.isoformat(timespec="seconds")
@@ -1014,13 +1044,24 @@ def forgot_password():
             "info",
         )
         return redirect(url_for("reset_password_code"))
-    return render_template("forgot_password.html")
+    remaining_ms = _password_reset_resend_remaining_ms()
+    return render_template(
+        "forgot_password.html",
+        resend_remaining_ms=remaining_ms,
+        resend_countdown=_password_reset_countdown_label(remaining_ms),
+    )
 
 
 @app.route("/reset-password", methods=["GET", "POST"])
 def reset_password_code():
     if request.method == "GET":
-        return render_template("reset_password.html", code_reset=True)
+        remaining_ms = _password_reset_resend_remaining_ms()
+        return render_template(
+            "reset_password.html",
+            code_reset=True,
+            resend_remaining_ms=remaining_ms,
+            resend_countdown=_password_reset_countdown_label(remaining_ms),
+        )
 
     email = request.form.get("email", "").strip().lower()
     code = request.form.get("code", "").strip()
@@ -1028,10 +1069,24 @@ def reset_password_code():
     confirm = request.form.get("confirm_password", "")
     if not valid_password(password):
         flash("Password must be at least 8 characters and include a letter and a number.", "error")
-        return render_template("reset_password.html", code_reset=True, email=email)
+        remaining_ms = _password_reset_resend_remaining_ms()
+        return render_template(
+            "reset_password.html",
+            code_reset=True,
+            email=email,
+            resend_remaining_ms=remaining_ms,
+            resend_countdown=_password_reset_countdown_label(remaining_ms),
+        )
     if password != confirm:
         flash("Passwords do not match.", "error")
-        return render_template("reset_password.html", code_reset=True, email=email)
+        remaining_ms = _password_reset_resend_remaining_ms()
+        return render_template(
+            "reset_password.html",
+            code_reset=True,
+            email=email,
+            resend_remaining_ms=remaining_ms,
+            resend_countdown=_password_reset_countdown_label(remaining_ms),
+        )
 
     conn = dbh.get_db()
     conn.execute("BEGIN IMMEDIATE")
@@ -1063,7 +1118,14 @@ def reset_password_code():
         conn.commit()
         conn.close()
         flash("The reset code is invalid, expired, or has already been used.", "error")
-        return render_template("reset_password.html", code_reset=True, email=email), 400
+        remaining_ms = _password_reset_resend_remaining_ms()
+        return render_template(
+            "reset_password.html",
+            code_reset=True,
+            email=email,
+            resend_remaining_ms=remaining_ms,
+            resend_countdown=_password_reset_countdown_label(remaining_ms),
+        ), 400
 
     conn.execute(
         "UPDATE users SET password_hash=?,must_reset_pw=0 WHERE id=?",
@@ -1081,6 +1143,7 @@ def reset_password_code():
     dbh.log_action(conn, user, "Password reset using emailed code")
     conn.commit()
     conn.close()
+    session.pop("password_reset_resend_until", None)
     flash("Your password was changed. You can now log in.", "success")
     return redirect(url_for("login"))
 

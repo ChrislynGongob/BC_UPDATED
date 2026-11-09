@@ -369,6 +369,8 @@ textarea {
 .auth-card h1 { font-size: 21px; margin-bottom: 4px; }
 .auth-sub { color: var(--muted); font-size: 13.5px; margin-bottom: 22px; }
 .auth-foot { text-align: center; margin-top: 18px; font-size: 13.5px; color: var(--muted); }
+.resend-countdown-button[disabled] { opacity: .62; cursor: not-allowed; }
+.resend-countdown-button { font-variant-numeric: tabular-nums; }
 .otp-input { letter-spacing: 6px; font-size: 20px; text-align: center; font-weight: 700; }
 
 /* ---------------------------------------------------------------- misc */

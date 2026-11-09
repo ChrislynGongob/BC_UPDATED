@@ -264,7 +264,12 @@ class SecurityAndAllowanceTests(unittest.TestCase):
         payload = post.call_args.kwargs["json"]
         code = re.search(r"code is (\d{6})", payload["textContent"]).group(1)
         output = "\n".join(logs.output)
-        self.assertEqual(failed.get_data(as_text=True), unknown.get_data(as_text=True))
+        generic_notice = (
+            "Password reset instructions will be sent to your inbox. "
+            "Please check your email to continue."
+        )
+        self.assertIn(generic_notice, failed.get_data(as_text=True))
+        self.assertIn(generic_notice, unknown.get_data(as_text=True))
         self.assertNotIn("brevo-test-secret", output)
         self.assertNotIn(code, output)
         self.assertIn("status=401", output)
@@ -486,6 +491,110 @@ class SecurityAndAllowanceTests(unittest.TestCase):
             limited.get_data(as_text=True),
         )
 
+    def test_password_reset_resend_countdown_persists_and_server_blocks_early_resend(self):
+        email = "countdown-reset@example.test"
+        self.create_resident(email)
+        client = A.app.test_client()
+        config = {
+            "PASSWORD_RESET_RESEND_SECONDS": "60",
+            "PASSWORD_RESET_MAX_SENDS_PER_HOUR": "30",
+        }
+        with patch.dict(os.environ, config), patch.object(
+            A.email_service, "send_email"
+        ) as send_email:
+            response = client.post(
+                "/forgot-password",
+                data={"email": email},
+                follow_redirects=True,
+            )
+            page = response.get_data(as_text=True)
+            self.assertIn(
+                "Password reset instructions will be sent to your inbox.",
+                page,
+            )
+            reset_page = client.get("/reset-password").get_data(as_text=True)
+            self.assertIn('data-idle-label="Resend Email"', reset_page)
+            self.assertIn('formaction="/forgot-password"', reset_page)
+            self.assertRegex(reset_page, r'<button[^>]*disabled[^>]*>')
+            self.assertIn("Resend Email in 00:5", reset_page)
+
+            refreshed = client.get("/forgot-password")
+            refreshed_html = refreshed.get_data(as_text=True)
+            self.assertIn("Resend Email in 00:5", refreshed_html)
+            self.assertRegex(refreshed_html, r'data-remaining-ms="[1-9][0-9]*"')
+            self.assertRegex(refreshed_html, r'<button[^>]*disabled[^>]*>')
+            self.assertIn('data-idle-label="Send Reset Code"', refreshed_html)
+            with client.session_transaction() as session:
+                self.assertTrue(session.permanent)
+                self.assertNotIn(email, str(dict(session)))
+
+            client.post(
+                "/forgot-password",
+                data={
+                    "email": email,
+                    "code": "123456",
+                    "password": "Ignored@123",
+                    "confirm_password": "Ignored@123",
+                },
+            )
+            self.assertEqual(send_email.call_count, 1)
+            reblocked = client.get("/forgot-password").get_data(as_text=True)
+            self.assertIn("Resend Email in 00:5", reblocked)
+
+            with client.session_transaction() as session:
+                session["password_reset_resend_until"] = (
+                    datetime.now() - timedelta(seconds=1)
+                ).isoformat()
+            available = client.get("/forgot-password").get_data(as_text=True)
+            self.assertIn('data-idle-label="Send Reset Code"', available)
+            self.assertIn(">Send Reset Code</button>", available)
+
+    def test_reset_code_page_has_resend_action_without_duplicate_email_field(self):
+        response = A.app.test_client().post(
+            "/forgot-password",
+            data={"email": "unknown-reset@example.test"},
+            follow_redirects=True,
+        )
+        html = response.get_data(as_text=True)
+        self.assertIn(
+            "Password reset instructions will be sent to your inbox. "
+            "Please check your email to continue.",
+            html,
+        )
+        self.assertIn('data-idle-label="Resend Email"', html)
+        self.assertIn('formaction="/forgot-password"', html)
+        self.assertIn("Resend Email in 00:5", html)
+        self.assertEqual(html.count('name="email"'), 1)
+
+    def test_password_reset_hourly_cap_allows_thirty_requests(self):
+        email = "thirty-reset@example.test"
+        user_id = self.create_resident(email)
+        client = A.app.test_client()
+        with patch.dict(os.environ, {
+            "PASSWORD_RESET_RESEND_SECONDS": "1",
+            "PASSWORD_RESET_MAX_SENDS_PER_HOUR": "30",
+        }), patch.object(A.email_service, "send_email") as send_email:
+            for attempt in range(30):
+                client.post("/forgot-password", data={"email": email})
+                if attempt < 29:
+                    conn = dbh.get_db()
+                    conn.execute(
+                        "UPDATE password_reset_limits SET last_sent_at=? WHERE user_id=?",
+                        ((datetime.now() - timedelta(seconds=2)).isoformat(), user_id),
+                    )
+                    conn.commit()
+                    conn.close()
+            client.post("/forgot-password", data={"email": email})
+
+        self.assertEqual(send_email.call_count, 30)
+        conn = dbh.get_db()
+        rate = conn.execute(
+            "SELECT sends_in_window FROM password_reset_limits WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+        conn.close()
+        self.assertEqual(rate["sends_in_window"], 30)
+
     def test_unknown_email_and_smtp_failure_have_generic_response(self):
         client = A.app.test_client()
         with patch.object(A.email_service, "send_email") as send_email:
@@ -505,7 +614,12 @@ class SecurityAndAllowanceTests(unittest.TestCase):
             failed = client.post(
                 "/forgot-password", data={"email": email}, follow_redirects=True
             )
-        self.assertEqual(unknown.get_data(as_text=True), failed.get_data(as_text=True))
+        generic_notice = (
+            "Password reset instructions will be sent to your inbox. "
+            "Please check your email to continue."
+        )
+        self.assertIn(generic_notice, unknown.get_data(as_text=True))
+        self.assertIn(generic_notice, failed.get_data(as_text=True))
         conn = dbh.get_db()
         reset_code = conn.execute(
             "SELECT code_hash,used_at FROM password_reset_codes WHERE user_id=?", (user_id,)

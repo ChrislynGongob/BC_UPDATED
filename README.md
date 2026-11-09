@@ -240,6 +240,9 @@ Remove-Item Env:DEMO_ADMIN_PASSWORD, Env:DEMO_STAFF_PASSWORD, Env:DEMO_RESIDENT_
 #    The sender name is BarangayConnect. BREVO_REPLY_TO is optional and is sent
 #    through Brevo's replyTo API field only when configured. All app emails
 #    include an automated no-reply footer; no unverified sender is substituted.
+#    Password reset requests use a server-enforced 60-second resend cooldown
+#    and a default maximum of 30 requests per account per hour. The reset page
+#    countdown is signed-session-backed and remains synchronized on reload.
 #    API acceptance confirms the request was accepted by Brevo, not that it
 #    reached a recipient's inbox. SMTP placeholders do not deliver email.
 #    Configure optional expiration/resend settings from .env.example as needed.
