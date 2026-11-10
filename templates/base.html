@@ -60,7 +60,7 @@
         <a href="{{ url_for('community_issue_management') }}" class="{{ 'active' if request.endpoint in ['community_issue_management','community_issue_management_detail'] }}"><span class="nav-icon" aria-hidden="true">◎</span>Clustered Issues</a>
         <a href="{{ url_for('admin_announcements') }}" class="{{ 'active' if request.endpoint=='admin_announcements' }}"><span class="nav-icon" aria-hidden="true">◈</span>Announcements</a>
         <div class="nav-section-label">Insights</div>
-        <a href="{{ url_for('admin_reports') }}" class="{{ 'active' if request.endpoint=='admin_reports' }}"><span class="nav-icon" aria-hidden="true">▥</span>Reports</a>
+        <a href="{{ url_for('admin_reports') }}" class="{{ 'active' if request.endpoint in ['admin_reports','admin_complaint_analytics_page','admin_document_request_analytics_page'] }}"><span class="nav-icon" aria-hidden="true">▥</span>Reports &amp; Analytics</a>
         <a href="{{ url_for('audit_logs') }}" class="{{ 'active' if request.endpoint=='audit_logs' }}"><span class="nav-icon" aria-hidden="true">◷</span>Audit Logs</a>
       {% endif %}
     </nav>
@@ -108,7 +108,7 @@
     </header>
 
     <main class="content">
-      {% if request.endpoint != 'search' %}
+      {% if request.endpoint not in ['search', 'admin_reports'] %}
       <h1 class="page-title content-page-title">{% block page_title %}Dashboard{% endblock %}</h1>
       {% endif %}
       {% with messages = get_flashed_messages(with_categories=true) %}

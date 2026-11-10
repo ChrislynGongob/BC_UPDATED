@@ -157,6 +157,15 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS admin_chart_preferences (
+    admin_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    analytics_type  TEXT NOT NULL CHECK (analytics_type IN ('complaints','document-requests')),
+    category        TEXT NOT NULL,
+    color           TEXT NOT NULL CHECK (color GLOB '#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]'),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (admin_id, analytics_type, category)
+);
+
 -- Dated status timeline for requests and complaints (shown to residents as a
 -- real history instead of a generic arrow diagram).
 CREATE TABLE IF NOT EXISTS status_history (

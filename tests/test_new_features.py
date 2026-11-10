@@ -153,7 +153,7 @@ class ProfilePictureTests(FeatureTestBase):
         self.assertIn('<a href="/logout" class="logout-link">Logout</a>', sidebar)
         self.assertRegex(
             sidebar,
-            r'<a href="/admin/complaints"[^>]*>Concerns(?:<span class="pill-badge"[^>]*>\d+</span>)?</a>',
+            r'<a href="/admin/complaints"[^>]*><span class="nav-icon"[^>]*>[^<]*</span>Concerns(?:<span class="pill-badge"[^>]*>\d+</span>)?</a>',
         )
         self.assertNotIn(">Complaints</a>", sidebar)
         self.assertNotIn("logout-mini", html)

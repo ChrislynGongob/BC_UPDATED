@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Reports &amp; Analytics — BarangayConnect{% endblock %}
+{% block page_title %}Reports &amp; Analytics{% endblock %}
+{% block content %}
+<section class="reports-selection-intro">
+  <h2>Reports &amp; Analytics</h2>
+  <p class="muted">Choose an analytics module to explore filed barangay services.</p>
+</section>
+<div class="reports-selection-grid">
+  <a class="reports-selection-card card" href="{{ url_for('admin_complaint_analytics_page') }}">
+    <span class="reports-selection-icon reports-selection-icon-complaints" aria-hidden="true">⚑</span>
+    <span class="reports-selection-copy">
+      <strong>Complaint Analytics</strong>
+      <span>Analyze complaints by category.</span>
+    </span>
+    <span class="reports-selection-arrow" aria-hidden="true">→</span>
+  </a>
+  <a class="reports-selection-card card" href="{{ url_for('admin_document_request_analytics_page') }}">
+    <span class="reports-selection-icon reports-selection-icon-requests" aria-hidden="true">▤</span>
+    <span class="reports-selection-copy">
+      <strong>Document Request Analytics</strong>
+      <span>Analyze document requests by document type.</span>
+    </span>
+    <span class="reports-selection-arrow" aria-hidden="true">→</span>
+  </a>
+</div>
+{% endblock %}

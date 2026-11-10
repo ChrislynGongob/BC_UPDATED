@@ -78,9 +78,18 @@ class OfficeAccessTests(unittest.TestCase):
             row = conn.execute("SELECT * FROM requests WHERE request_type=? LIMIT 1", (t,)).fetchone()
             assert row, f"seed has no {t} request"
             cls.req[t] = row
+        residency_id = cls.req["Certificate of Residency"]["id"]
+        conn.execute(
+            "UPDATE requests SET registered_voter=0, computed_fee=? WHERE id=?",
+            (A.RESIDENCY_FEE, residency_id),
+        )
+        cls.req["Certificate of Residency"] = conn.execute(
+            "SELECT * FROM requests WHERE id=?", (residency_id,)
+        ).fetchone()
         cls.cmp = conn.execute("SELECT * FROM complaints LIMIT 1").fetchone()
         cls.cmp_file = conn.execute("SELECT stored_name FROM complaint_files LIMIT 1").fetchone()
         cls.staff_id = {o: conn.execute("SELECT id FROM users WHERE office=?", (o,)).fetchone()["id"] for o in OFFICES}
+        conn.commit()
         conn.close()
 
     @classmethod
@@ -429,11 +438,11 @@ class OfficeAccessTests(unittest.TestCase):
         self.assertEqual(updated, "+639171234567")
 
     # ------------------------------------------------------ Certificate of Residency
-    def _submit_residency(self, voter):
+    def _submit_residency(self, voter, purpose="Employment"):
         c = A.app.test_client()
         login(c, "maria.resident@example.com", "Resident@1234")
         data = {
-            "request_type": "Certificate of Residency", "purpose": "Employment", "civil_status": "Single",
+            "request_type": "Certificate of Residency", "purpose": purpose, "civil_status": "Single",
             "age": "30", "contact_number": "0917 000 0000", "request_address": "Purok 1",
             "valid_id": (io.BytesIO(b"%PDF-1.4 test"), "id.pdf"),
         }
@@ -454,7 +463,7 @@ class OfficeAccessTests(unittest.TestCase):
         return out
 
     def test_residency_fee_and_routing(self):
-        row, before = self._submit_residency(voter=False)
+        row, before = self._submit_residency(voter=False, purpose="Residency fee test")
         self.assertEqual(row["computed_fee"], 50)
         self.assertEqual(row["registered_voter"], 0)
         after = self._notif_counts()
@@ -467,7 +476,7 @@ class OfficeAccessTests(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        row, _ = self._submit_residency(voter=True)
+        row, _ = self._submit_residency(voter=True, purpose="Residency fee test")
         self.assertEqual(row["computed_fee"], 0)
         self.assertEqual(row["registered_voter"], 1)
 

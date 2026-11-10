@@ -4,6 +4,7 @@ import csv
 import io
 import hashlib
 import hmac
+import logging
 import math
 import secrets
 import threading
@@ -23,6 +24,7 @@ import db as dbh
 import chatbot
 import priority as prioritymod
 import email_service
+import complaint_analytics as complaint_analytics_service
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -163,6 +165,7 @@ REQUEST_STATUS_COLORS = {
 }
 
 app = Flask(__name__)
+app.logger.setLevel(logging.INFO)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 _db_ready = False
 _db_startup_lock = threading.Lock()
@@ -964,6 +967,17 @@ def forgot_password():
                 max(0, math.ceil((last_sent + timedelta(seconds=min_wait) - now).total_seconds()))
                 if last_sent else 0
             )
+            if wait_seconds:
+                app.logger.info(
+                    "password_reset_email event=cooldown_active remaining_seconds=%s",
+                    wait_seconds,
+                )
+            if sends >= max_sends:
+                app.logger.info(
+                    "password_reset_email event=hourly_cap_reached requests=%s limit=%s",
+                    sends,
+                    max_sends,
+                )
             if sends >= max_sends or wait_seconds:
                 if wait_seconds and sends < max_sends:
                     _set_password_reset_resend_deadline(min_wait, start=last_sent)
@@ -1001,8 +1015,11 @@ def forgot_password():
             )
             conn.commit()
         conn.close()
+        if not user:
+            app.logger.info("password_reset_email event=no_active_account")
         if user:
             try:
+                provider = os.environ.get("EMAIL_PROVIDER", "").strip().lower() or "smtp"
                 email_service.send_email(
                     user["email"],
                     "Your BarangayConnect password reset code",
@@ -1011,13 +1028,15 @@ def forgot_password():
                     "If you did not request a reset, you can ignore this email.",
                 )
             except (email_service.EmailConfigurationError, email_service.smtplib.SMTPException, OSError, ValueError) as exc:
-                detail = str(exc) if isinstance(exc, email_service.EmailConfigurationError) else ""
                 smtp_code = getattr(exc, "smtp_code", None)
+                status_code = getattr(exc, "status_code", None)
                 app.logger.error(
-                    "Password reset email delivery failed (type=%s, smtp_code=%s, detail=%s).",
+                    "password_reset_email event=send_failed provider=%s type=%s "
+                    "status_code=%s smtp_code=%s",
+                    provider,
                     type(exc).__name__,
+                    status_code,
                     smtp_code,
-                    detail,
                 )
                 conn = dbh.get_db()
                 conn.execute(
@@ -1038,6 +1057,10 @@ def forgot_password():
                 dbh.log_action(conn, user, "Password reset code sent")
                 conn.commit()
                 conn.close()
+                app.logger.info(
+                    "password_reset_email event=sent provider=%s result=provider_accepted",
+                    provider,
+                )
         flash(
             "Password reset instructions will be sent to your inbox. "
             "Please check your email to continue.",
@@ -3233,6 +3256,8 @@ def _status_doughnut(rows, colors):
 @app.route("/reports")
 @login_required("staff", "admin")
 def admin_reports(user):
+    if user["role"] == "admin":
+        return render_template("admin/reports_index.html")
     if user["role"] == "staff" and not (
         handled_request_types(user) or can_handle_complaints(user)
     ):
@@ -3263,6 +3288,158 @@ def admin_reports(user):
         complaint_status_colors=COMPLAINT_STATUS_COLORS,
         request_status_colors=REQUEST_STATUS_COLORS,
     )
+
+
+def _render_admin_report_module(user, module):
+    analytics_filters = complaint_analytics_service.current_filters(request.args)
+    conn = dbh.get_db()
+    try:
+        payload = complaint_analytics_service.build_payload(
+            conn, user["id"], analytics_filters, module
+        )
+    except ValueError as exc:
+        payload = complaint_analytics_service.empty_payload(analytics_filters, str(exc))
+    finally:
+        conn.close()
+    return render_template(
+        "admin/report_analytics_module.html",
+        module=module,
+        module_config=complaint_analytics_service.MODULES[module],
+        payload=payload,
+        csrf_token=session.setdefault("admin_chart_preferences_csrf", secrets.token_urlsafe(32)),
+    )
+
+
+@app.route("/admin/reports/complaints")
+@login_required("admin")
+def admin_complaint_analytics_page(user):
+    return _render_admin_report_module(user, "complaints")
+
+
+@app.route("/admin/reports/document-requests")
+@login_required("admin")
+def admin_document_request_analytics_page(user):
+    return _render_admin_report_module(user, "document-requests")
+
+
+@app.route("/admin/complaint-analytics/data")
+@app.route("/admin/reports/complaints/data")
+@login_required("admin")
+def admin_complaint_analytics_data(user):
+    analytics_filters = complaint_analytics_service.current_filters(request.args)
+    conn = dbh.get_db()
+    try:
+        payload = complaint_analytics_service.build_payload(
+            conn, user["id"], analytics_filters, "complaints"
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    finally:
+        conn.close()
+    return jsonify(payload)
+
+
+@app.route("/admin/reports/document-requests/data")
+@login_required("admin")
+def admin_document_request_analytics_data(user):
+    analytics_filters = complaint_analytics_service.current_filters(request.args)
+    conn = dbh.get_db()
+    try:
+        payload = complaint_analytics_service.build_payload(
+            conn, user["id"], analytics_filters, "document-requests"
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    finally:
+        conn.close()
+    return jsonify(payload)
+
+
+def _save_admin_chart_preferences(user, module):
+    module_config = complaint_analytics_service.MODULES[module]
+    config_label = module_config["preference_label"]
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Invalid color preference request."}), 400
+    token = payload.get("csrf_token")
+    expected_token = session.get("admin_chart_preferences_csrf", "")
+    if (
+        not isinstance(token, str)
+        or not isinstance(expected_token, str)
+        or not hmac.compare_digest(token, expected_token)
+    ):
+        return jsonify({"error": "The request could not be verified. Reload the page and try again."}), 403
+
+    mode = payload.get("mode")
+    conn = dbh.get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if mode == "reset":
+            changed = conn.execute(
+                "DELETE FROM admin_chart_preferences WHERE admin_id=? AND analytics_type=?",
+                (user["id"], module),
+            ).rowcount
+            if changed:
+                dbh.log_action(
+                    conn, user, f"Reset {config_label} analytics colors",
+                    target=f"{config_label} analytics colors",
+                    details=f"Reset {changed} label color preferences.",
+                )
+            conn.commit()
+            return jsonify({"ok": True, "message": "Colors reset to defaults."})
+
+        colors = payload.get("colors")
+        if mode != "save" or not isinstance(colors, dict):
+            conn.rollback()
+            return jsonify({"error": "Invalid color preference request."}), 400
+        if any(
+            not isinstance(category, str)
+            or not complaint_analytics_service.valid_color(color)
+            for category, color in colors.items()
+        ):
+            conn.rollback()
+            return jsonify({"error": "Choose a valid #RRGGBB color for each category."}), 400
+
+        known_categories = {
+            row["category"]
+            for row in conn.execute(
+                f"SELECT DISTINCT COALESCE(NULLIF({module_config['field']}, ''), 'Unspecified') "
+                f"AS category FROM {module_config['table']}"
+            ).fetchall()
+        }
+        if not set(colors).issubset(known_categories):
+            conn.rollback()
+            return jsonify({"error": "An analytics label is no longer available. Reload the page."}), 400
+        conn.executemany(
+            "INSERT INTO admin_chart_preferences "
+            "(admin_id, analytics_type, category, color) VALUES (?,?,?,?) "
+            "ON CONFLICT(admin_id, analytics_type, category) DO UPDATE SET "
+            "color=excluded.color, updated_at=datetime('now')",
+            [(user["id"], module, category, color.upper()) for category, color in colors.items()],
+        )
+        if colors:
+            dbh.log_action(
+                conn, user, f"Updated {config_label} analytics colors",
+                target=f"{config_label} analytics colors",
+                details=f"Saved {len(colors)} label color preferences.",
+            )
+        conn.commit()
+        return jsonify({"ok": True, "message": "Category colors saved."})
+    finally:
+        conn.close()
+
+
+@app.route("/admin/complaint-analytics/colors", methods=["POST"])
+@app.route("/admin/reports/complaints/colors", methods=["POST"])
+@login_required("admin")
+def admin_complaint_analytics_colors(user):
+    return _save_admin_chart_preferences(user, "complaints")
+
+
+@app.route("/admin/reports/document-requests/colors", methods=["POST"])
+@login_required("admin")
+def admin_document_request_analytics_colors(user):
+    return _save_admin_chart_preferences(user, "document-requests")
 
 
 @app.route("/admin/reports/export")

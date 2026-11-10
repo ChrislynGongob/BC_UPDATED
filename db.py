@@ -41,6 +41,18 @@ def migrate_db():
             used_at TEXT,
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS admin_chart_preferences (
+            admin_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            analytics_type TEXT NOT NULL CHECK (
+                analytics_type IN ('complaints','document-requests')
+            ),
+            category TEXT NOT NULL,
+            color TEXT NOT NULL CHECK (
+                color GLOB '#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]'
+            ),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (admin_id, analytics_type, category)
+        );
         CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user
             ON password_reset_tokens(user_id);
         CREATE TABLE IF NOT EXISTS password_reset_codes (
@@ -87,6 +99,54 @@ def migrate_db():
             ON concern_allowance_events(complaint_id, event_type)
             WHERE complaint_id IS NOT NULL;
     """)
+    chart_preference_columns = {
+        row["name"]: row for row in conn.execute(
+            "PRAGMA table_info(admin_chart_preferences)"
+        ).fetchall()
+    }
+    chart_preference_pk = tuple(
+        row["name"]
+        for row in sorted(
+            (row for row in chart_preference_columns.values() if row["pk"]),
+            key=lambda row: row["pk"],
+        )
+    )
+    if (
+        "analytics_type" not in chart_preference_columns
+        or chart_preference_pk != ("admin_id", "analytics_type", "category")
+    ):
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "CREATE TABLE admin_chart_preferences_migration ("
+            "admin_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+            "analytics_type TEXT NOT NULL CHECK "
+            "(analytics_type IN ('complaints','document-requests')), "
+            "category TEXT NOT NULL, "
+            "color TEXT NOT NULL CHECK "
+            "(color GLOB '#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]'), "
+            "updated_at TEXT NOT NULL DEFAULT (datetime('now')), "
+            "PRIMARY KEY (admin_id, analytics_type, category))"
+        )
+        if "analytics_type" in chart_preference_columns:
+            conn.execute(
+                "INSERT INTO admin_chart_preferences_migration "
+                "(admin_id, analytics_type, category, color, updated_at) "
+                "SELECT admin_id, analytics_type, category, color, updated_at "
+                "FROM admin_chart_preferences"
+            )
+        else:
+            conn.execute(
+                "INSERT INTO admin_chart_preferences_migration "
+                "(admin_id, analytics_type, category, color, updated_at) "
+                "SELECT admin_id, 'complaints', category, color, updated_at "
+                "FROM admin_chart_preferences"
+            )
+        conn.execute("DROP TABLE admin_chart_preferences")
+        conn.execute(
+            "ALTER TABLE admin_chart_preferences_migration "
+            "RENAME TO admin_chart_preferences"
+        )
+        conn.commit()
     otp_cols = {
         row["name"] for row in conn.execute("PRAGMA table_info(admin_otp_challenges)").fetchall()
     }

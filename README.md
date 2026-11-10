@@ -203,19 +203,19 @@ pip install -r requirements.txt
 # 4. (Optional, for a fresh demo database only) set demo passwords without
 #    putting them in shell history, then seed demo data. seed.py resets the DB.
 #    Do NOT run seed.py on a database whose users/data you need to preserve.
-$env:DEMO_ADMIN_PASSWORD = [Net.NetworkCredential]::new("", (Read-Host -AsSecureString "Demo admin password")).Password
-$env:DEMO_STAFF_PASSWORD = [Net.NetworkCredential]::new("", (Read-Host -AsSecureString "Demo staff password")).Password
-$env:DEMO_RESIDENT_PASSWORD = [Net.NetworkCredential]::new("", (Read-Host -AsSecureString "Demo resident password")).Password
-python3 seed.py
-$env:FOUNDING_ADMIN_NAME = "Ralph Patrick Ga"
-$env:FOUNDING_ADMIN_PASSWORD = [Net.NetworkCredential]::new("", (Read-Host -AsSecureString "Founding Admin initial password")).Password
-python3 setup_founding_admin.py
-Remove-Item Env:DEMO_ADMIN_PASSWORD, Env:DEMO_STAFF_PASSWORD, Env:DEMO_RESIDENT_PASSWORD, Env:FOUNDING_ADMIN_PASSWORD
+  $env:DEMO_ADMIN_PASSWORD = [Net.NetworkCredential]::new("", (Read-Host -AsSecureString "Demo admin password")).Password
+  $env:DEMO_STAFF_PASSWORD = [Net.NetworkCredential]::new("", (Read-Host -AsSecureString "Demo staff password")).Password
+  $env:DEMO_RESIDENT_PASSWORD = [Net.NetworkCredential]::new("", (Read-Host -AsSecureString "Demo resident password")).Password
+  python3 seed.py
+  Remove-Item Env:DEMO_ADMIN_PASSWORD, Env:DEMO_STAFF_PASSWORD, Env:DEMO_RESIDENT_PASSWORD
 
-# 5. For an existing database, skip seed.py. Set only FOUNDING_ADMIN_NAME and
-#    FOUNDING_ADMIN_PASSWORD above and run setup_founding_admin.py. The setup
-#    updates the existing Founding Admin row in place and refuses ambiguous
-#    accounts or an email already owned by someone else.
+  # 5. To create a Founding Admin on an initialized database with no admins,
+  #    set the bootstrap values securely and use the create-only initializer.
+  #    It exits without changing accounts if any admin already exists.
+  $env:FOUNDING_ADMIN_NAME = "Ralph Patrick Ga"
+  $env:FOUNDING_ADMIN_PASSWORD = [Net.NetworkCredential]::new("", (Read-Host -AsSecureString "Founding Admin initial password")).Password
+  python3 init_founding_admin.py
+  Remove-Item Env:FOUNDING_ADMIN_NAME, Env:FOUNDING_ADMIN_PASSWORD
 #
 # 6. Configure email delivery. For local SMTP, set EMAIL_PROVIDER=smtp (or
 #    leave it unset) and provide the SMTP settings from .env.example. On Render,
@@ -236,6 +236,9 @@ Remove-Item Env:DEMO_ADMIN_PASSWORD, Env:DEMO_STAFF_PASSWORD, Env:DEMO_RESIDENT_
 #    EMAIL_PROVIDER=brevo
 #    BREVO_API_KEY=<Brevo API key>
 #    SMTP_FROM=<currently verified sender email>
+#    Set SMTP_FROM to the exact sender address verified in Brevo. The app does
+#    not substitute or construct a sender address; requests fail configuration
+#    validation if SMTP_FROM is absent or invalid.
 #    BREVO_REPLY_TO=<optional reply-to email>
 #    The sender name is BarangayConnect. BREVO_REPLY_TO is optional and is sent
 #    through Brevo's replyTo API field only when configured. All app emails
@@ -243,6 +246,10 @@ Remove-Item Env:DEMO_ADMIN_PASSWORD, Env:DEMO_STAFF_PASSWORD, Env:DEMO_RESIDENT_
 #    Password reset requests use a server-enforced 60-second resend cooldown
 #    and a default maximum of 30 requests per account per hour. The reset page
 #    countdown is signed-session-backed and remains synchronized on reload.
+#    Render logs report password_reset_email events (sent, send_failed,
+#    cooldown_active, hourly_cap_reached, no_active_account) without including
+#    account emails, reset codes, tokens, or API keys. "sent" means provider
+#    acceptance only; it does not confirm inbox delivery.
 #    API acceptance confirms the request was accepted by Brevo, not that it
 #    reached a recipient's inbox. SMTP placeholders do not deliver email.
 #    Configure optional expiration/resend settings from .env.example as needed.
@@ -261,12 +268,25 @@ python3 app.py
 
 Open **http://127.0.0.1:5000** in your browser.
 
-`setup_founding_admin.py` always uses `ralphpatrickga@gmail.com` for the
-Founding Admin login and recovery email. It hashes the administrator-supplied
-initial password, requires a change after the first login, and records
-the setup in the audit log. The Founding Admin email is also the address used
-for login. Admin password recovery is sent to the stored recovery email; after
-setup, that is the Founding Admin email.
+The Founding Admin login and recovery email is `ralphpatrickga@gmail.com`.
+`init_founding_admin.py` hashes the administrator-supplied initial password
+and requires a change after first sign-in. Admin password recovery is sent to
+the stored recovery email.
+
+For one-time, create-only initialization, run `python init_founding_admin.py`
+with `FOUNDING_ADMIN_NAME` and `FOUNDING_ADMIN_PASSWORD` set. It creates the
+Founding Admin only when no administrator exists; otherwise it makes no account
+changes. Never use `setup_founding_admin.py` as a recurring deploy command: it
+updates an existing Founding Admin's account information and password.
+
+Render Free cannot persist this app's local SQLite database across redeploys,
+restarts, or spin-down. Do not use the initializer as a Render Free Start
+Command to establish a durable administrator; the account and other SQLite data
+will be lost with the filesystem. First move to storage that persists (for
+example, a paid service with a disk mounted at the app's `instance/` directory,
+or a supported external database), then run the create-only initializer once
+against that same persistent database. No Render Start Command is configured
+by this project.
 
 `seed.py` is destructive demo tooling: it deletes and rebuilds the local
 database. Use it only when you intentionally want to discard all current data.

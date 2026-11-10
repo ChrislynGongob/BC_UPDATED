@@ -72,14 +72,14 @@ def _send_brevo_email(recipient, subject, body, html_body=None):
         )
     except requests.exceptions.RequestException as exc:
         _logger.error(
-            "Brevo API request failed (type=%s).",
+            "Brevo API request failed before an acceptance response (type=%s).",
             type(exc).__name__,
         )
         raise EmailDeliveryError("Brevo API request failed.") from exc
 
     if not 200 <= response.status_code < 300:
         _logger.error(
-            "Brevo API rejected transactional email (status=%s).",
+            "Brevo API rejected transactional email (status=%s); provider did not accept the request.",
             response.status_code,
         )
         raise EmailDeliveryError(

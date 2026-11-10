@@ -203,6 +203,22 @@ class SecurityAndAllowanceTests(unittest.TestCase):
             ):
                 A.email_service.send_email("resident@example.test", "Subject", "Body")
 
+    def test_brevo_service_requires_sender_from_environment_without_fallback(self):
+        config = {
+            "EMAIL_PROVIDER": "brevo",
+            "BREVO_API_KEY": "brevo-test-secret",
+        }
+        with patch.dict(os.environ, config, clear=True), patch.object(
+            A.email_service.requests, "post"
+        ) as post:
+            with self.assertRaisesRegex(
+                A.email_service.EmailConfigurationError, "SMTP_FROM"
+            ):
+                A.email_service.send_email(
+                    "resident@example.test", "Subject", "Body"
+                )
+        post.assert_not_called()
+
     def test_brevo_service_rejects_invalid_sender(self):
         config = {
             "EMAIL_PROVIDER": "brevo",
@@ -490,6 +506,98 @@ class SecurityAndAllowanceTests(unittest.TestCase):
             "Please check your email to continue.",
             limited.get_data(as_text=True),
         )
+
+    def test_password_reset_diagnostic_events_are_safe_and_distinguish_outcomes(self):
+        config = {
+            "EMAIL_PROVIDER": "brevo",
+            "PASSWORD_RESET_RESEND_SECONDS": "60",
+            "PASSWORD_RESET_MAX_SENDS_PER_HOUR": "20",
+        }
+        sent_email = "diagnostic-sent@example.test"
+        cooldown_email = "diagnostic-cooldown@example.test"
+        capped_email = "diagnostic-capped@example.test"
+        failed_email = "diagnostic-failed@example.test"
+        self.create_resident(sent_email)
+        cooldown_user_id = self.create_resident(cooldown_email)
+        capped_user_id = self.create_resident(capped_email)
+        failed_user_id = self.create_resident(failed_email)
+        client = A.app.test_client()
+
+        with patch.dict(os.environ, config), patch.object(
+            A.email_service, "send_email"
+        ) as send_email:
+            with self.assertLogs(A.app.logger, level="INFO") as sent_logs:
+                client.post("/forgot-password", data={"email": sent_email})
+            sent_output = "\n".join(sent_logs.output)
+            self.assertIn("event=sent provider=brevo result=provider_accepted", sent_output)
+            otp = re.search(
+                r"code is (\d{6})", send_email.call_args.args[2]
+            ).group(1)
+            self.assertNotIn(sent_email, sent_output)
+            self.assertNotIn(otp, sent_output)
+
+            old_timestamp = (datetime.now() - timedelta(seconds=61)).isoformat(
+                timespec="microseconds"
+            )
+            conn = dbh.get_db()
+            conn.execute(
+                "INSERT INTO password_reset_limits "
+                "(user_id,last_sent_at,window_started_at,sends_in_window) "
+                "VALUES (?,?,?,?)",
+                (capped_user_id, old_timestamp, datetime.now().isoformat(), 20),
+            )
+            conn.commit()
+            conn.close()
+            with self.assertLogs(A.app.logger, level="INFO") as cap_logs:
+                client.post("/forgot-password", data={"email": capped_email})
+            cap_output = "\n".join(cap_logs.output)
+            self.assertIn(
+                "event=hourly_cap_reached requests=20 limit=20", cap_output
+            )
+            self.assertNotIn(capped_email, cap_output)
+
+            recent_timestamp = (datetime.now() - timedelta(seconds=30)).isoformat(
+                timespec="microseconds"
+            )
+            conn = dbh.get_db()
+            conn.execute(
+                "INSERT INTO password_reset_limits "
+                "(user_id,last_sent_at,window_started_at,sends_in_window) "
+                "VALUES (?,?,?,?)",
+                (cooldown_user_id, recent_timestamp, datetime.now().isoformat(), 1),
+            )
+            conn.commit()
+            conn.close()
+            with self.assertLogs(A.app.logger, level="INFO") as cooldown_logs:
+                client.post("/forgot-password", data={"email": cooldown_email})
+            cooldown_output = "\n".join(cooldown_logs.output)
+            self.assertIn("event=cooldown_active remaining_seconds=", cooldown_output)
+            self.assertNotIn(cooldown_email, cooldown_output)
+
+            with self.assertLogs(A.app.logger, level="INFO") as missing_logs:
+                client.post(
+                    "/forgot-password",
+                    data={"email": "diagnostic-missing@example.test"},
+                )
+            missing_output = "\n".join(missing_logs.output)
+            self.assertIn("event=no_active_account", missing_output)
+            self.assertNotIn("diagnostic-missing@example.test", missing_output)
+
+        with patch.dict(os.environ, config), patch.object(
+            A.email_service,
+            "send_email",
+            side_effect=A.email_service.EmailDeliveryError(
+                "Brevo API rejected the email request.", status_code=401
+            ),
+        ), self.assertLogs(A.app.logger, level="ERROR") as failure_logs:
+            client.post("/forgot-password", data={"email": failed_email})
+        failure_output = "\n".join(failure_logs.output)
+        self.assertIn(
+            "event=send_failed provider=brevo type=EmailDeliveryError status_code=401",
+            failure_output,
+        )
+        self.assertNotIn(failed_email, failure_output)
+        self.assertNotIn(str(failed_user_id), failure_output)
 
     def test_password_reset_resend_countdown_persists_and_server_blocks_early_resend(self):
         email = "countdown-reset@example.test"

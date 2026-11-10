@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}{{ module_config.label }} — BarangayConnect{% endblock %}
+{% block page_title %}{{ module_config.label }}{% endblock %}
+{% block content %}
+<section class="report-analytics-module card" id="admin-report-analytics"
+         data-data-url="{{ url_for('admin_complaint_analytics_data') if module == 'complaints' else url_for('admin_document_request_analytics_data') }}"
+         data-colors-url="{{ url_for('admin_complaint_analytics_colors') if module == 'complaints' else url_for('admin_document_request_analytics_colors') }}"
+         data-csrf-token="{{ csrf_token }}"
+         data-chart-label="{{ module_config.label }} bar chart"
+         data-no-leaders="No matching {{ module_config.plural }}">
+  <div class="report-analytics-header">
+    <div>
+      <h2>{{ module_config.label }}</h2>
+      <p class="muted">Philippine time (UTC+8) · all statuses included · based on filing date</p>
+    </div>
+    <a class="btn btn-outline report-analytics-back" href="{{ url_for('admin_reports') }}">← Back to Reports &amp; Analytics</a>
+  </div>
+
+  <form class="card analytics-filter-form report-analytics-filter-form" method="GET"
+        action="{{ request.path }}" id="report-analytics-filters">
+    <div class="analytics-filter-grid">
+      <div class="form-row">
+        <label for="report-analytics-period">Period</label>
+        <select id="report-analytics-period" name="period">
+          {% for key, label in [('daily','Daily'),('monthly','Monthly'),('yearly','Yearly'),('custom','Custom Date Range')] %}
+          <option value="{{ key }}" {{ 'selected' if payload.filters.period == key }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row report-analytics-period-field" data-period="daily"
+           {% if payload.filters.period != 'daily' %}hidden{% endif %}>
+        <label for="report-analytics-date">Date</label>
+        <input id="report-analytics-date" name="daily_date" type="date"
+               {% if payload.filters.period != 'daily' %}disabled{% endif %}
+               value="{{ payload.filters.daily_date }}">
+      </div>
+      <div class="form-row report-analytics-period-field" data-period="monthly"
+           {% if payload.filters.period != 'monthly' %}hidden{% endif %}>
+        <label for="report-analytics-month">Month and year</label>
+        <input id="report-analytics-month" name="month" type="month"
+               {% if payload.filters.period != 'monthly' %}disabled{% endif %}
+               value="{{ payload.filters.month }}">
+      </div>
+      <div class="form-row report-analytics-period-field" data-period="yearly"
+           {% if payload.filters.period != 'yearly' %}hidden{% endif %}>
+        <label for="report-analytics-year">Year</label>
+        <input id="report-analytics-year" name="year" type="number" min="1" max="9998" step="1"
+               {% if payload.filters.period != 'yearly' %}disabled{% endif %}
+               value="{{ payload.filters.year }}">
+      </div>
+      <div class="form-row report-analytics-period-field" data-period="custom"
+           {% if payload.filters.period != 'custom' %}hidden{% endif %}>
+        <label for="report-analytics-start">Start date</label>
+        <input id="report-analytics-start" name="analytics_start" type="date"
+               {% if payload.filters.period != 'custom' %}disabled{% endif %}
+               value="{{ payload.filters.start_date }}">
+      </div>
+      <div class="form-row report-analytics-period-field" data-period="custom"
+           {% if payload.filters.period != 'custom' %}hidden{% endif %}>
+        <label for="report-analytics-end">End date</label>
+        <input id="report-analytics-end" name="analytics_end" type="date"
+               {% if payload.filters.period != 'custom' %}disabled{% endif %}
+               value="{{ payload.filters.end_date }}">
+      </div>
+    </div>
+    <div class="analytics-filter-actions">
+      <button class="btn btn-primary" type="submit">Update Analytics</button>
+    </div>
+  </form>
+
+  <div class="stat-grid report-analytics-summary" aria-live="polite">
+    <div class="stat-card accent-cyan">
+      <div class="num" data-analytics-total>{{ payload.total }}</div>
+      <div class="label">Total {{ module_config.plural|title }}</div>
+    </div>
+    <div class="stat-card accent-amber">
+      <div class="label">{{ module_config.title }}</div>
+      <div class="report-analytics-leaders" data-analytics-leaders>
+        {% if payload.leaders %}
+          {% for label in payload.leaders %}<span>{{ label }}</span>{% if not loop.last %}<span aria-hidden="true">, </span>{% endif %}{% endfor %}
+        {% else %}No matching {{ module_config.plural }}{% endif %}
+      </div>
+    </div>
+  </div>
+  <p class="flash flash-error report-analytics-error" data-analytics-error role="alert"
+     {% if not payload.error %}hidden{% endif %}>{{ payload.error or '' }}</p>
+
+  <section class="card report-analytics-chart-card" aria-labelledby="report-analytics-chart-title">
+    <div class="card-head">
+      <div>
+        <h3 id="report-analytics-chart-title">{{ 'Complaints by Category' if module == 'complaints' else 'Document Requests by Type' }}</h3>
+        <p class="muted">{{ module_config.plural|capitalize }} filed during the selected period, ranked highest to lowest.</p>
+      </div>
+    </div>
+    <div class="report-analytics-chart" data-analytics-chart>
+      {% if payload['items'] %}
+      <svg viewBox="0 0 {{ payload.chart_width }} 360" width="{{ payload.chart_width }}" height="360"
+           role="img" aria-label="{{ module_config.label }} bar chart">
+        {% for tick in [0, 0.5, 1] %}
+        {% set y = 260 - (210 * tick) %}
+        <line x1="48" y1="{{ y }}" x2="{{ payload.chart_width - 12 }}" y2="{{ y }}" class="report-chart-gridline"></line>
+        <text x="40" y="{{ y + 4 }}" text-anchor="end" class="report-chart-tick">{{ (payload.chart_max * tick)|round|int }}</text>
+        {% endfor %}
+        {% for row in payload['items'] %}
+        <g class="report-chart-bar" data-label="{{ row.label }}">
+          <title>{{ row.label }}: {{ row.count }}</title>
+          <rect x="{{ row.x }}" y="{{ row.bar_y }}" width="{{ row.bar_width }}" height="{{ row.bar_height }}"
+                rx="5" fill="{{ row.color }}"></rect>
+          <text x="{{ row.label_x }}" y="{{ row.value_y }}" text-anchor="middle" class="report-chart-value">{{ row.count }}</text>
+          <text x="{{ row.label_x }}" y="{{ row.label_y }}" transform="rotate(45 {{ row.label_x }} {{ row.label_y }})"
+                class="report-chart-label">{{ row.label }}</text>
+        </g>
+        {% endfor %}
+      </svg>
+      {% else %}
+      <div class="empty-state report-analytics-empty">No {{ module_config.plural }} match this period.</div>
+      {% endif %}
+    </div>
+    <div class="report-analytics-table-wrap">
+      <table class="report-analytics-data-table">
+        <caption>{{ module_config.plural|capitalize }} by {{ 'category' if module == 'complaints' else 'document type' }}</caption>
+        <thead><tr><th scope="col">{{ 'Category' if module == 'complaints' else 'Document type' }}</th><th scope="col">Count</th></tr></thead>
+        <tbody data-analytics-table>
+          {% for row in payload['items'] %}
+          <tr><th scope="row">{{ row.label }}</th><td>{{ row.count }}</td></tr>
+          {% else %}
+          <tr class="report-analytics-table-empty"><td colspan="2">No matching records.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card report-analytics-colors" aria-labelledby="report-analytics-colors-title">
+    <div class="card-head">
+      <div>
+        <h3 id="report-analytics-colors-title">Customize Chart Colors</h3>
+        <p class="muted">Colors are saved separately for this module and your admin account.</p>
+      </div>
+    </div>
+    <div class="report-analytics-color-list" data-analytics-colors>
+      {% for row in payload.color_preferences %}
+      <label class="report-analytics-color-item">
+        <input type="color" value="{{ row.color }}" data-label="{{ row.label }}" aria-label="Color for {{ row.label }}">
+        <span>{{ row.label }}</span>
+      </label>
+      {% else %}
+      <p class="muted">No labels are available to customize.</p>
+      {% endfor %}
+    </div>
+    <div class="analytics-filter-actions">
+      <button class="btn btn-primary" type="button" data-analytics-save>Save Colors</button>
+      <button class="btn btn-outline" type="button" data-analytics-reset>Reset to Default</button>
+      <span class="report-analytics-color-status" data-analytics-color-status role="status" aria-live="polite"></span>
+    </div>
+  </section>
+</section>
+<script defer src="{{ url_for('static', filename='js/admin-report-analytics.js') }}"></script>
+{% endblock %}
