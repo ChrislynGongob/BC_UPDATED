@@ -3277,28 +3277,76 @@ def admin_reports(user):
         fmt: url_for("export_report", **filters, format=fmt)
         for fmt in ("csv", "pdf", "xlsx")
     }
+    purpose_filters = complaint_analytics_service.current_filters(request.args)
+    purpose_types = handled_request_types(user)
+    purpose_payload = complaint_analytics_service.empty_purpose_payload(
+        purpose_filters, office=user["office"] or ""
+    )
+    if purpose_types:
+        conn = dbh.get_db()
+        try:
+            purpose_payload = complaint_analytics_service.build_purpose_payload(
+                conn, purpose_filters, allowed_types=purpose_types, office=user["office"] or ""
+            )
+        except ValueError as exc:
+            purpose_payload["error"] = str(exc)
+        finally:
+            conn.close()
     return render_template(
         "admin/reports.html", report=report, filter_error=filter_error,
         export_urls=export_urls,
         complaint_categories=COMPLAINT_CATEGORIES,
-        request_types=handled_request_types(user) if user["role"] == "staff" else REQUEST_TYPES,
+        request_types=purpose_types,
         complaint_statuses=COMPLAINT_STATUSES,
         request_statuses=REQUEST_STATUSES,
         complaint_access=can_handle_complaints(user),
         complaint_status_colors=COMPLAINT_STATUS_COLORS,
         request_status_colors=REQUEST_STATUS_COLORS,
+        purpose_payload=purpose_payload,
+        purpose_filters=purpose_filters,
+        purpose_document_types=purpose_types,
+        purpose_offices=OFFICES,
+        show_purpose_office_filter=False,
     )
 
 
 def _render_admin_report_module(user, module):
     analytics_filters = complaint_analytics_service.current_filters(request.args)
+    purpose_filters = complaint_analytics_service.current_filters(request.args)
+    purpose_office = request.args.get("office", "all").strip()
+    if purpose_office not in ("all", *OFFICES):
+        purpose_office = "all"
+    purpose_document_type = request.args.get("document_type", "").strip()
+    purpose_payload = None
+    purpose_document_types = list(REQUEST_TYPES)
     conn = dbh.get_db()
     try:
         payload = complaint_analytics_service.build_payload(
             conn, user["id"], analytics_filters, module
         )
+        if module == "document-requests":
+            purpose_types = (
+                None if purpose_office == "all" else OFFICES[purpose_office]["requests"]
+            )
+            if purpose_office == "all":
+                stored_types = conn.execute(
+                    "SELECT DISTINCT request_type FROM requests "
+                    "WHERE TRIM(COALESCE(request_type, ''))<>''"
+                ).fetchall()
+                purpose_document_types = sorted(
+                    set(REQUEST_TYPES + [row["request_type"] for row in stored_types]),
+                    key=str.casefold,
+                )
+            purpose_payload = complaint_analytics_service.build_purpose_payload(
+                conn, purpose_filters, allowed_types=purpose_types,
+                document_type=purpose_document_type, office=purpose_office,
+            )
     except ValueError as exc:
         payload = complaint_analytics_service.empty_payload(analytics_filters, str(exc))
+        if module == "document-requests":
+            purpose_payload = complaint_analytics_service.empty_purpose_payload(
+                purpose_filters, purpose_document_type, purpose_office, str(exc)
+            )
     finally:
         conn.close()
     return render_template(
@@ -3306,6 +3354,11 @@ def _render_admin_report_module(user, module):
         module=module,
         module_config=complaint_analytics_service.MODULES[module],
         payload=payload,
+        purpose_payload=purpose_payload,
+        purpose_filters=purpose_filters,
+        purpose_document_types=purpose_document_types,
+        purpose_offices=OFFICES,
+        show_purpose_office_filter=True,
         csrf_token=session.setdefault("admin_chart_preferences_csrf", secrets.token_urlsafe(32)),
     )
 
@@ -3347,6 +3400,35 @@ def admin_document_request_analytics_data(user):
     try:
         payload = complaint_analytics_service.build_payload(
             conn, user["id"], analytics_filters, "document-requests"
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    finally:
+        conn.close()
+    return jsonify(payload)
+
+
+@app.route("/reports/request-purposes/data")
+@login_required("admin", "staff")
+def request_purpose_analytics_data(user):
+    filters = complaint_analytics_service.current_filters(request.args)
+    document_type = request.args.get("document_type", "").strip()
+    if user["role"] == "admin":
+        office = request.args.get("office", "all").strip()
+        if office not in ("all", *OFFICES):
+            return jsonify({"error": "Choose a valid office."}), 400
+        allowed_types = None if office == "all" else OFFICES[office]["requests"]
+    else:
+        allowed_types = handled_request_types(user)
+        if not allowed_types:
+            abort(403)
+        office = user["office"] or ""
+
+    conn = dbh.get_db()
+    try:
+        payload = complaint_analytics_service.build_purpose_payload(
+            conn, filters, allowed_types=allowed_types,
+            document_type=document_type, office=office,
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

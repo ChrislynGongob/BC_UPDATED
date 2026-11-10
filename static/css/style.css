@@ -1025,6 +1025,7 @@ textarea {
 .analytics-insight-grid span { color: var(--muted); font-size: 12px; }
 .analytics-insight-grid .analytics-insight-label { color: var(--cyan-dark); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .analytics-chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: stretch; }
+.analytics-chart-grid #purpose-analytics { grid-column: 1 / -1; }
 .analytics-chart-card { min-width: 0; }
 .analytics-chart-card .card-head { align-items: flex-start; }
 .analytics-chart-card .card-head p { margin: 5px 0 0; font-size: 12px; }

@@ -119,7 +119,7 @@ def send_email(recipient, subject, body, html_body=None):
         raise EmailConfigurationError("Enable only one of SMTP_USE_SSL or SMTP_USE_TLS.")
     username = os.environ.get("SMTP_USERNAME", "").strip()
     password = os.environ.get("SMTP_PASSWORD", "")
-    if bool(username) != bool(password):
+    if bool(username) != bool(password.strip()):
         raise EmailConfigurationError("SMTP_USERNAME and SMTP_PASSWORD must both be configured.")
 
     message = EmailMessage()

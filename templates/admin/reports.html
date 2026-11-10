@@ -168,6 +168,7 @@
     {% else %}<div class="empty-state">No document requests match this selection.</div>{% endif %}
     {% if report.comparison %}<div class="analytics-legend"><span><i class="legend-current"></i>Selected period</span><span><i class="legend-previous"></i>Previous period</span></div>{% endif %}
   </section>
+  {% include "analytics/purpose_analytics.html" %}
   {% endif %}
 </div>
 

@@ -368,14 +368,21 @@ class SecurityAndAllowanceTests(unittest.TestCase):
             "SMTP_HOST": "smtp.example.test",
             "SMTP_PORT": "587",
             "SMTP_USERNAME": "mailer@example.test",
-            "SMTP_PASSWORD": "",
             "SMTP_FROM": "no-reply@example.test",
             "SMTP_USE_TLS": "true",
             "SMTP_USE_SSL": "false",
         }
-        with patch.dict(os.environ, config):
-            with self.assertRaises(A.email_service.EmailConfigurationError):
-                A.email_service.send_email("resident@example.test", "Test subject", "Test body")
+        for password in ("", " \t "):
+            with self.subTest(password_is_blank=not password.strip()), patch.dict(
+                os.environ,
+                {**config, "SMTP_PASSWORD": password, "EMAIL_PASSWORD": "decoy-password"},
+                clear=True,
+            ), patch.object(A.email_service.smtplib, "SMTP") as smtp_constructor:
+                with self.assertRaises(A.email_service.EmailConfigurationError):
+                    A.email_service.send_email(
+                        "resident@example.test", "Test subject", "Test body"
+                    )
+                smtp_constructor.assert_not_called()
 
     def test_reset_email_code_is_hashed_single_use_and_resets_without_login(self):
         email = "reset-flow@example.test"

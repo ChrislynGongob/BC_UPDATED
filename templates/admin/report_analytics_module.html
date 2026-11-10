@@ -131,6 +131,10 @@
     </div>
   </section>
 
+  {% if module == 'document-requests' %}
+  {% include "analytics/purpose_analytics.html" %}
+  {% endif %}
+
   <section class="card report-analytics-colors" aria-labelledby="report-analytics-colors-title">
     <div class="card-head">
       <div>

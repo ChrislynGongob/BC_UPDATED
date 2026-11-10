@@ -187,5 +187,94 @@ def build_payload(conn, admin_id, filters, module):
     }
 
 
+def build_purpose_payload(conn, filters, allowed_types=None, document_type="", office="all"):
+    start_utc, end_utc = period_utc_bounds(filters)
+    scope_clauses = []
+    scope_params = []
+    if allowed_types is not None:
+        if not allowed_types:
+            return empty_purpose_payload(filters, document_type, office)
+        scope_clauses.append(
+            "request_type IN (" + ",".join("?" for _ in allowed_types) + ")"
+        )
+        scope_params.extend(allowed_types)
+    if document_type:
+        scope_clauses.append("request_type=?")
+        scope_params.append(document_type)
+    scope_where = " AND ".join(scope_clauses) if scope_clauses else "1=1"
+    date_params = [start_utc, end_utc] + scope_params
+    purpose_expression = "COALESCE(NULLIF(TRIM(purpose), ''), 'Unspecified')"
+    rows = conn.execute(
+        f"SELECT {purpose_expression} AS purpose, COUNT(*) AS count FROM requests "
+        "WHERE datetime(created_at)>=? AND datetime(created_at)<? "
+        f"AND {scope_where} "
+        f"GROUP BY {purpose_expression} "
+        "ORDER BY count DESC, purpose COLLATE NOCASE ASC, purpose ASC",
+        date_params,
+    ).fetchall()
+    labels = [
+        row["purpose"]
+        for row in conn.execute(
+            f"SELECT DISTINCT {purpose_expression} AS purpose FROM requests "
+            f"WHERE {scope_where} ORDER BY purpose COLLATE NOCASE ASC, purpose ASC",
+            scope_params,
+        ).fetchall()
+    ]
+    color_map = {label: _default_color(index) for index, label in enumerate(labels)}
+    items = [
+        {
+            "purpose": row["purpose"],
+            "label": row["purpose"],
+            "count": row["count"],
+            "color": color_map[row["purpose"]],
+        }
+        for row in rows
+    ]
+    maximum = max((row["count"] for row in items), default=0)
+    chart_width = max(640, 90 + len(items) * 100)
+    for index, row in enumerate(items):
+        row["x"] = 62 + index * 100
+        row["bar_width"] = 46
+        row["bar_height"] = max(1, round(row["count"] / maximum * 210)) if maximum else 0
+        row["bar_y"] = 260 - row["bar_height"]
+        row["label_x"] = row["x"] + 23
+        row["label_y"] = 279
+        row["value_y"] = row["bar_y"] - 8
+    total = sum(row["count"] for row in items)
+    leaders = []
+    if items:
+        highest = items[0]["count"]
+        leaders = [row["label"] for row in items if row["count"] == highest]
+    return {
+        "filters": filters,
+        "items": items,
+        "total": total,
+        "leaders": leaders,
+        "most_common_purpose": ", ".join(leaders) if leaders else None,
+        "most_common_purpose_count": maximum,
+        "document_type": document_type,
+        "office": office,
+        "chart_width": chart_width,
+        "chart_max": maximum,
+        "error": None,
+    }
+
+
+def empty_purpose_payload(filters, document_type="", office="all", error=None):
+    return {
+        "filters": filters,
+        "items": [],
+        "total": 0,
+        "leaders": [],
+        "most_common_purpose": None,
+        "most_common_purpose_count": 0,
+        "document_type": document_type,
+        "office": office,
+        "chart_width": 640,
+        "chart_max": 0,
+        "error": error,
+    }
+
+
 def valid_color(value):
     return isinstance(value, str) and COLOR_PATTERN.fullmatch(value) is not None

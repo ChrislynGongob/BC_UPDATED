@@ -259,6 +259,143 @@ class AnalyticsReportTests(unittest.TestCase):
         self.assertEqual(empty["items"], [])
         self.assertEqual(empty["leaders"], [])
 
+    def test_purpose_analytics_groups_real_request_purposes_by_office_and_ph_time(self):
+        self.add_request(
+            "PURPOSE-INDIGENCY-MED", "Certificate of Indigency",
+            "2025-03-31 16:00:00", "Rejected", "Medical Assistance",
+        )
+        self.add_request(
+            "PURPOSE-INDIGENCY-BLANK", "Certificate of Indigency",
+            "2025-04-10 12:00:00", "Approved", "  ",
+        )
+        self.add_request(
+            "PURPOSE-INDIGENCY-MED-2", "Certificate of Indigency",
+            "2025-04-20 12:00:00", "Under Review", "Medical Assistance",
+        )
+        self.add_request(
+            "PURPOSE-RESIDENCY-SCHOLARSHIP", "Certificate of Residency",
+            "2025-04-30 15:59:59", "Completed", "Scholarship ID",
+        )
+        self.add_request(
+            "PURPOSE-CLEARANCE-EMPLOYMENT", "Barangay Clearance",
+            "2025-04-15 00:00:00", "Submitted", "Local Employment",
+        )
+        self.add_request(
+            "PURPOSE-CLEARANCE-NEXT-MONTH", "Barangay Clearance",
+            "2025-04-30 16:00:00", "Submitted", "Custom employment reason",
+        )
+        admin = self.client_as(self.admin_id, "admin")
+
+        secretary = admin.get(
+            "/reports/request-purposes/data?period=monthly&month=2025-04"
+            "&office=secretary"
+        )
+        self.assertEqual(secretary.status_code, 200)
+        data = secretary.get_json()
+        self.assertEqual(data["total"], 4)
+        self.assertEqual(
+            [(row["purpose"], row["count"]) for row in data["items"]],
+            [("Medical Assistance", 2), ("Scholarship ID", 1), ("Unspecified", 1)],
+        )
+        self.assertEqual(
+            [(row["label"], row["count"]) for row in data["items"]],
+            [("Medical Assistance", 2), ("Scholarship ID", 1), ("Unspecified", 1)],
+        )
+        self.assertEqual(data["most_common_purpose"], "Medical Assistance")
+        self.assertEqual(data["most_common_purpose_count"], 2)
+
+        indigency = admin.get(
+            "/reports/request-purposes/data?period=monthly&month=2025-04"
+            "&office=secretary&document_type=Certificate+of+Indigency"
+        ).get_json()
+        self.assertEqual(indigency["total"], 3)
+        self.assertEqual(
+            [(row["purpose"], row["count"]) for row in indigency["items"]],
+            [("Medical Assistance", 2), ("Unspecified", 1)],
+        )
+        self.assertEqual(
+            [(row["label"], row["count"]) for row in indigency["items"]],
+            [("Medical Assistance", 2), ("Unspecified", 1)],
+        )
+
+        treasurer = admin.get(
+            "/reports/request-purposes/data?period=monthly&month=2025-04"
+            "&office=treasurer"
+        ).get_json()
+        self.assertEqual(treasurer["total"], 1)
+        self.assertEqual(treasurer["items"][0]["label"], "Local Employment")
+        no_document_office = admin.get(
+            "/reports/request-purposes/data?period=monthly&month=2025-04"
+            "&office=bpso"
+        ).get_json()
+        self.assertEqual(no_document_office["total"], 0)
+        self.assertEqual(
+            admin.get("/reports/request-purposes/data?office=unknown").status_code,
+            400,
+        )
+
+    def test_staff_purpose_analytics_is_limited_to_assigned_office(self):
+        self.add_request(
+            "PURPOSE-STAFF-SECRETARY", "Certificate of Indigency",
+            "2055-06-01 00:00:00", "Rejected", "Custom scholarship reason",
+        )
+        self.add_request(
+            "PURPOSE-STAFF-TREASURER", "Barangay Clearance",
+            "2055-06-02 00:00:00", "Approved", "Local Employment",
+        )
+        secretary = self.client_as(self.secretary_id, "staff")
+        result = secretary.get(
+            "/reports/request-purposes/data?period=yearly&year=2055"
+        )
+        self.assertEqual(result.status_code, 200)
+        data = result.get_json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["items"][0]["purpose"], "Custom scholarship reason")
+        self.assertEqual(data["items"][0]["label"], "Custom scholarship reason")
+
+        other_office_type = secretary.get(
+            "/reports/request-purposes/data?period=yearly&year=2055"
+            "&document_type=Barangay+Clearance&office=all"
+        ).get_json()
+        self.assertEqual(other_office_type["total"], 0)
+
+        bpso = self.client_as(self.bpso_id, "staff")
+        self.assertEqual(
+            bpso.get("/reports/request-purposes/data?period=yearly&year=2055").status_code,
+            403,
+        )
+        self.assertEqual(
+            bpso.get("/reports").status_code,
+            200,
+        )
+        staff_page = secretary.get("/reports").get_data(as_text=True)
+        self.assertIn("Requests by Purpose", staff_page)
+        self.assertIn("Purpose / Reason (x-axis)", staff_page)
+        self.assertIn("Certificate of Indigency", staff_page)
+        bpso_page = bpso.get("/reports").get_data(as_text=True)
+        self.assertIn("Most Common Complaints", bpso_page)
+        self.assertNotIn("Requests by Purpose", bpso_page)
+
+        resident = self.client_as(self.resident_id, "resident")
+        self.assertEqual(
+            resident.get("/reports/request-purposes/data").status_code, 403
+        )
+
+    def test_purpose_analytics_defaults_to_current_philippine_month(self):
+        client = self.client_as(self.admin_id, "admin")
+        page = client.get("/admin/reports/document-requests")
+        self.assertEqual(page.status_code, 200)
+        current_month = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m")
+        html = page.get_data(as_text=True)
+        self.assertIn("Requests by Purpose", html)
+        self.assertIn("Number of Requests (y-axis)", html)
+        month_input = re.search(
+            r'<input\b[^>]*id="purpose-analytics-month"[^>]*>', html, re.DOTALL
+        )
+        self.assertIsNotNone(month_input)
+        self.assertIn(f'value="{current_month}"', month_input.group(0))
+        self.assertIn('<option value="all" selected>All offices</option>', html)
+
     def test_document_request_colors_are_separate_from_complaint_colors(self):
         self.add_request("R-COLOR", "Noise Complaint", "2050-01-01 00:00:00")
         admin = self.client_as(self.admin_id, "admin")

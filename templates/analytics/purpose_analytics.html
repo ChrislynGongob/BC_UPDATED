@@ -1,0 +1,141 @@
+<section class="card report-analytics-chart-card" id="purpose-analytics"
+         data-data-url="{{ url_for('request_purpose_analytics_data') }}"
+         data-chart-label="Requests by purpose"
+         data-no-leader="No matching purposes">
+  <div class="card-head">
+    <div>
+      <h3>Requests by Purpose</h3>
+      <p class="muted">Purpose / Reason (x-axis) · Number of Requests (y-axis) · All statuses · Philippine time.</p>
+    </div>
+  </div>
+
+  <form class="card analytics-filter-form report-analytics-filter-form" method="GET"
+        action="{{ request.path }}" id="purpose-analytics-filters">
+    <div class="analytics-filter-grid">
+      <div class="form-row">
+        <label for="purpose-analytics-document">Document type</label>
+        <select id="purpose-analytics-document" name="document_type">
+          <option value="">All documents</option>
+          {% for document in purpose_document_types %}
+          <option value="{{ document }}" {{ 'selected' if purpose_payload.document_type == document }}>{{ document }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% if show_purpose_office_filter %}
+      <div class="form-row">
+        <label for="purpose-analytics-office">Office</label>
+        <select id="purpose-analytics-office" name="office">
+          <option value="all" {{ 'selected' if purpose_payload.office == 'all' }}>All offices</option>
+          {% for key, office in purpose_offices.items() %}
+          <option value="{{ key }}" {{ 'selected' if purpose_payload.office == key }}>{{ office.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endif %}
+      <div class="form-row">
+        <label for="purpose-analytics-period">Time period</label>
+        <select id="purpose-analytics-period" name="period">
+          {% for key, label in [('daily','Daily'),('monthly','Monthly'),('yearly','Yearly'),('custom','Custom Date Range')] %}
+          <option value="{{ key }}" {{ 'selected' if purpose_filters.period == key }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row purpose-analytics-period-field" data-period="daily"
+           {% if purpose_filters.period != 'daily' %}hidden{% endif %}>
+        <label for="purpose-analytics-date">Date</label>
+        <input id="purpose-analytics-date" name="daily_date" type="date"
+               value="{{ purpose_filters.daily_date }}"
+               {% if purpose_filters.period != 'daily' %}disabled{% endif %}>
+      </div>
+      <div class="form-row purpose-analytics-period-field" data-period="monthly"
+           {% if purpose_filters.period != 'monthly' %}hidden{% endif %}>
+        <label for="purpose-analytics-month">Month and year</label>
+        <input id="purpose-analytics-month" name="month" type="month"
+               value="{{ purpose_filters.month }}"
+               {% if purpose_filters.period != 'monthly' %}disabled{% endif %}>
+      </div>
+      <div class="form-row purpose-analytics-period-field" data-period="yearly"
+           {% if purpose_filters.period != 'yearly' %}hidden{% endif %}>
+        <label for="purpose-analytics-year">Year</label>
+        <input id="purpose-analytics-year" name="year" type="number" min="1" max="9998" step="1"
+               value="{{ purpose_filters.year }}"
+               {% if purpose_filters.period != 'yearly' %}disabled{% endif %}>
+      </div>
+      <div class="form-row purpose-analytics-period-field" data-period="custom"
+           {% if purpose_filters.period != 'custom' %}hidden{% endif %}>
+        <label for="purpose-analytics-start">Start date</label>
+        <input id="purpose-analytics-start" name="analytics_start" type="date"
+               value="{{ purpose_filters.start_date }}"
+               {% if purpose_filters.period != 'custom' %}disabled{% endif %}>
+      </div>
+      <div class="form-row purpose-analytics-period-field" data-period="custom"
+           {% if purpose_filters.period != 'custom' %}hidden{% endif %}>
+        <label for="purpose-analytics-end">End date</label>
+        <input id="purpose-analytics-end" name="analytics_end" type="date"
+               value="{{ purpose_filters.end_date }}"
+               {% if purpose_filters.period != 'custom' %}disabled{% endif %}>
+      </div>
+    </div>
+    <div class="analytics-filter-actions">
+      <button class="btn btn-primary" type="submit">Update Analytics</button>
+    </div>
+  </form>
+
+  <div class="stat-grid report-analytics-summary" aria-live="polite">
+    <div class="stat-card accent-cyan">
+      <div class="num" data-purpose-total>{{ purpose_payload.total }}</div>
+      <div class="label">Total Requests</div>
+    </div>
+    <div class="stat-card accent-amber">
+      <div class="label">Most Common Purpose</div>
+      <div class="report-analytics-leaders" data-purpose-leader>
+        {{ purpose_payload.most_common_purpose or 'No matching purposes' }}
+      </div>
+      {% if purpose_payload.most_common_purpose %}
+      <small data-purpose-leader-count>{{ purpose_payload.most_common_purpose_count }} requests</small>
+      {% else %}
+      <small data-purpose-leader-count hidden></small>
+      {% endif %}
+    </div>
+  </div>
+  <p class="flash flash-error report-analytics-error" data-purpose-error role="alert"
+     {% if not purpose_payload.error %}hidden{% endif %}>{{ purpose_payload.error or '' }}</p>
+  <div class="report-analytics-chart" data-purpose-chart>
+    {% if purpose_payload['items'] %}
+    <svg viewBox="0 0 {{ purpose_payload.chart_width }} 360" width="{{ purpose_payload.chart_width }}" height="360"
+         role="img" aria-label="Requests by purpose; x-axis: Request Purpose/Reason; y-axis: Number of Requests">
+      {% for tick in [0, 0.5, 1] %}
+      {% set y = 260 - (210 * tick) %}
+      <line x1="48" y1="{{ y }}" x2="{{ purpose_payload.chart_width - 12 }}" y2="{{ y }}" class="report-chart-gridline"></line>
+      <text x="40" y="{{ y + 4 }}" text-anchor="end" class="report-chart-tick">{{ (purpose_payload.chart_max * tick)|round|int }}</text>
+      {% endfor %}
+      {% for row in purpose_payload['items'] %}
+      <g class="report-chart-bar" data-label="{{ row.label }}">
+        <title>{{ row.purpose }}: {{ row.count }} requests</title>
+        <rect x="{{ row.x }}" y="{{ row.bar_y }}" width="{{ row.bar_width }}" height="{{ row.bar_height }}"
+              rx="5" fill="{{ row.color }}"></rect>
+        <text x="{{ row.label_x }}" y="{{ row.value_y }}" text-anchor="middle" class="report-chart-value">{{ row.count }}</text>
+        <text x="{{ row.label_x }}" y="{{ row.label_y }}" transform="rotate(45 {{ row.label_x }} {{ row.label_y }})"
+              class="report-chart-label">{{ row.purpose }}</text>
+      </g>
+      {% endfor %}
+    </svg>
+    {% else %}
+    <div class="empty-state report-analytics-empty">No requests match this period.</div>
+    {% endif %}
+  </div>
+  <div class="report-analytics-table-wrap">
+    <table class="report-analytics-data-table">
+      <caption>Requests by purpose</caption>
+      <thead><tr><th scope="col">Purpose</th><th scope="col">Count</th></tr></thead>
+      <tbody data-purpose-table>
+        {% for row in purpose_payload['items'] %}
+        <tr><th scope="row">{{ row.purpose }}</th><td>{{ row.count }}</td></tr>
+        {% else %}
+        <tr class="report-analytics-table-empty"><td colspan="2">No matching records.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+<script defer src="{{ url_for('static', filename='js/purpose-analytics.js') }}"></script>
