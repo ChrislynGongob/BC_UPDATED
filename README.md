@@ -4,22 +4,13 @@ A working citizen request and complaint management system for a single barangay 
 resident self-registration, document requests, complaint filing, staff processing
 queues, an admin dashboard with reports/audit logs, in-app notifications, and search.
 
-## ⚠️ About the tech stack (read this first)
+## Database and storage
 
-The PRD asked for Django + MySQL. This build runs on **Flask + SQLite** instead,
-for one practical reason: this sandbox has **no internet access**, so `pip install
-django` and MySQL drivers could not be downloaded here — only the packages already
-present in the image (Flask, openpyxl, reportlab...) could be used. Rather than hand
-you an untested Django scaffold, this is a fully working, actually-tested app on the
-closest available stack.
-
-The database layer is plain SQL (`schema.sql` + parameterized queries), not
-Django's ORM, so porting to MySQL later is mechanical: swap `sqlite3` for
-`mysql-connector-python`/`PyMySQL` in `db.py`, adjust the small number of
-SQLite-specific functions (`datetime('now')`, `AUTOINCREMENT`), and the schema
-maps over almost 1:1. If you specifically need Django, this is a solid reference
-implementation to port from — every route, permission check, and status flow in
-the PRD is already implemented and working here.
+The app remains Flask/Jinja2 and uses parameterized SQL. SQLite is the default
+for local development. An opt-in PostgreSQL backend uses psycopg 3 and is
+designed for Supabase's Session Pooler; private Supabase Storage is also
+available as an opt-in upload backend. Neither backend creates or resets a
+production schema automatically.
 
 ## What's implemented
 
@@ -276,20 +267,16 @@ the stored recovery email.
 For one-time, create-only initialization, run `python init_founding_admin.py`
 with `FOUNDING_ADMIN_NAME` and `FOUNDING_ADMIN_PASSWORD` set. It creates the
 Founding Admin only when no administrator exists; otherwise it makes no account
-changes. Never use `setup_founding_admin.py` as a recurring deploy command: it
-updates an existing Founding Admin's account information and password.
+changes. Never use `setup_founding_admin.py` as a recurring deploy command. Both initializer
+scripts now refuse to overwrite an existing administrator's password.
 
-Render Free cannot persist this app's local SQLite database across redeploys,
-restarts, or spin-down. Do not use the initializer as a Render Free Start
-Command to establish a durable administrator; the account and other SQLite data
-will be lost with the filesystem. First move to storage that persists (for
-example, a paid service with a disk mounted at the app's `instance/` directory,
-or a supported external database), then run the create-only initializer once
-against that same persistent database. No Render Start Command is configured
-by this project.
+Render Free does not persist local SQLite or upload files across redeploys. The
+included `render.yaml` starts only Gunicorn; it does not run schema creation,
+seeding, or account setup. Configure PostgreSQL and private Storage before
+deployment.
 
-`seed.py` is destructive demo tooling: it deletes and rebuilds the local
-database. Use it only when you intentionally want to discard all current data.
+`seed.py` is development-only demo tooling. It refuses to run if its SQLite
+database already exists and never deletes or rebuilds a database.
 The seeded demo admin is a regular Administrator, not the Founding Admin.
 
 To fill in your own barangay's contact numbers on the Emergency Hotlines page,
@@ -326,19 +313,21 @@ office against every request type and complaint route, uploads, search, the API,
 assignment rules, the Certificate of Residency flow and the upgrade of an older
 database.
 
-**Upgrading an existing database:** `python3 app.py` upgrades an older
-`instance/barangayconnect.db` automatically on start (adds each staff member's
-office where it can be worked out from their old position/category, and the
-registered-voter column). Any staff it cannot map have no access until an admin picks
-their office under Manage Staff. Or just re-run `python3 seed.py` for fresh demo data.
+**Upgrading an existing SQLite database locally:** `python3 app.py` applies the
+existing SQLite migrations at startup. Production startup does not create or
+migrate a missing database.
 
 ## Project structure
 
 ```
 barangayconnect/
 ├── app.py                 # All routes, RBAC, business logic
-├── db.py                  # SQLite connection + helper functions
-├── schema.sql             # Database schema
+├── db.py                  # SQLite/PostgreSQL connection compatibility
+├── schema.sql             # SQLite schema
+├── postgres_schema.sql    # Explicit Supabase/PostgreSQL schema and RLS
+├── storage.py             # Local/private Supabase Storage access
+├── migrate_sqlite_to_postgres.py
+├── migrate_uploads_to_supabase.py
 ├── seed.py                # Demo data + test account generator
 ├── requirements.txt
 ├── tests/                  # unittest coverage for access, features, email, and allowance
@@ -359,22 +348,21 @@ barangayconnect/
   numbers), so a `.exe` renamed to `.pdf` is rejected.
 - SQL uses parameterized queries throughout — no string-built SQL.
 - Sessions use Flask's signed cookies; set a real `SECRET_KEY` environment
-  variable before deploying anywhere public (a dev default is used otherwise).
+  variable before deploying anywhere public (production startup requires it).
 - The audit log is insert-only — the app never issues `UPDATE`/`DELETE` against
   `audit_logs`.
 
 ## Deploying for real use
 
-This ships with Flask's built-in dev server, which is fine for trying it out but
-says so itself: not for production. For an actual barangay deployment, put it
-behind a real WSGI server (gunicorn/uwsgi) and Apache/Nginx as the PRD's stack
-specifies, move to MySQL, and set a strong `SECRET_KEY`.
+For deployment steps, environment variable names, migration safety, smoke tests,
+and recovery guidance, see [docs/SUPABASE_MIGRATION.md](./docs/SUPABASE_MIGRATION.md).
 
 ## Backups, bulk actions, resident filters
 
-- **Database backup** (Admin → Settings): "Back up now & download", plus an automatic backup roughly
-  every 24 hours (newest 14 kept) in `instance/backups/`. The backup covers the database only —
-  copy `uploads/` separately.
+- **Database backup** (Admin → Settings): SQLite uses the online backup API
+  and daily local copies. PostgreSQL uses `pg_dump` for manual downloads when
+  `pg_dump` is installed; Render's local filesystem is ephemeral, so retain
+  downloads elsewhere and configure Supabase-managed backups separately.
 - **Bulk resolve/close** (Complaints pages, admin and BPSO staff): tick complaints, then Resolve or Close selected.
 - **Manage Residents filters**: status, purok, and address search.
 - **Staff/admin navigation badges**: Requests counts newly submitted requests visible to that role/office; Concerns counts pending concerns.

@@ -12,7 +12,15 @@ from setup_founding_admin import FOUNDING_ADMIN_EMAIL
 
 
 def init_founding_admin():
-    if not os.path.isfile(dbh.DB_PATH):
+    if dbh.get_backend() == "postgres":
+        dbh.ensure_postgres_schema()
+    elif not os.path.isfile(dbh.DB_PATH):
+        if os.environ.get("RENDER", "").lower() == "true" or os.environ.get(
+            "APP_ENV", ""
+        ).lower() == "production":
+            raise RuntimeError(
+                "The production SQLite database is missing; refusing to create it."
+            )
         os.makedirs(os.path.dirname(dbh.DB_PATH), exist_ok=True)
         dbh.init_db()
 

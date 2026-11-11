@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import logging
 import math
+import mimetypes
 import secrets
 import threading
 from functools import wraps
@@ -25,6 +26,7 @@ import chatbot
 import priority as prioritymod
 import email_service
 import complaint_analytics as complaint_analytics_service
+import storage as storage_service
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -166,7 +168,13 @@ REQUEST_STATUS_COLORS = {
 
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
-app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
+_secret_key = os.environ.get("SECRET_KEY")
+if not _secret_key and (
+    os.environ.get("RENDER", "").lower() == "true"
+    or os.environ.get("APP_ENV", "").lower() == "production"
+):
+    raise RuntimeError("SECRET_KEY must be configured before production startup.")
+app.secret_key = _secret_key or "dev-secret-key-change-in-production"
 _db_ready = False
 _db_startup_lock = threading.Lock()
 
@@ -179,8 +187,17 @@ def _ensure_database_ready():
     with _db_startup_lock:
         if _db_ready:
             return
-        if os.path.isfile(dbh.DB_PATH):
+        if dbh.get_backend() == "postgres":
+            dbh.ensure_postgres_schema()
+        elif os.path.isfile(dbh.DB_PATH):
             dbh.migrate_db()
+        elif os.environ.get("RENDER", "").lower() == "true" or os.environ.get(
+            "APP_ENV", ""
+        ).lower() == "production":
+            raise RuntimeError(
+                "The configured SQLite database is missing. Production startup "
+                "will not create or replace it automatically."
+            )
         else:
             dbh.init_db()
         _db_ready = True
@@ -684,11 +701,19 @@ def save_upload(file_storage, subdir, allowed_ext=None, max_size=MAX_FILE_SIZE, 
         expected = "jpg" if ext == "jpeg" else ext
         if matched_kind != expected:
             raise ValueError("File content does not match its declared type.")
-    target_dir = os.path.join(UPLOAD_DIR, subdir)
-    os.makedirs(target_dir, exist_ok=True)
     stored_name = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{random.randint(1000,9999)}_{secure_filename(filename)}"
-    file_storage.save(os.path.join(target_dir, stored_name))
+    storage_service.upload(
+        subdir, stored_name, file_storage.stream, upload_root=UPLOAD_DIR
+    )
     return filename, stored_name
+
+
+def _cleanup_uploaded_files(files):
+    for subdir, stored_name in files:
+        try:
+            storage_service.delete(subdir, stored_name)
+        except storage_service.StorageError as error:
+            app.logger.error("Uploaded file cleanup failed: %s", error)
 
 
 def format_file_size(size):
@@ -1412,9 +1437,11 @@ def new_request(user):
              int(registered_voter and rtype == "Certificate of Residency")),
         )
         req_id = cur.lastrowid
+        uploaded_files = []
         try:
             saved = save_upload(request.files.get("valid_id"), "requests")
             orig, stored = saved
+            uploaded_files.append(("requests", stored))
             conn.execute(
                 "INSERT INTO request_files (request_id, file_type, filename, stored_name) VALUES (?,?,?,?)",
                 (req_id, "valid_id", orig, stored),
@@ -1426,6 +1453,7 @@ def new_request(user):
                     saved = save_upload(f, "requests")
                     if saved:
                         orig, stored = saved
+                        uploaded_files.append(("requests", stored))
                         conn.execute(
                             "INSERT INTO request_files (request_id, file_type, label, filename, stored_name) VALUES (?,?,?,?,?)",
                             (req_id, "supporting_document", label, orig, stored),
@@ -1433,12 +1461,14 @@ def new_request(user):
             if has_representative:
                 saved = save_upload(request.files.get("authorization_letter"), "requests")
                 orig, stored = saved
+                uploaded_files.append(("requests", stored))
                 conn.execute(
                     "INSERT INTO request_files (request_id, file_type, filename, stored_name) VALUES (?,?,?,?)",
                     (req_id, "authorization_letter", orig, stored),
                 )
                 saved = save_upload(request.files.get("representative_valid_id"), "requests")
                 orig, stored = saved
+                uploaded_files.append(("requests", stored))
                 conn.execute(
                     "INSERT INTO request_files (request_id, file_type, filename, stored_name) VALUES (?,?,?,?)",
                     (req_id, "representative_id", orig, stored),
@@ -1447,14 +1477,20 @@ def new_request(user):
                 saved = save_upload(f, "requests")
                 if saved:
                     orig, stored = saved
+                    uploaded_files.append(("requests", stored))
                     conn.execute(
                         "INSERT INTO request_files (request_id, file_type, filename, stored_name) VALUES (?,?,?,?)",
                         (req_id, "supporting_document", orig, stored),
                     )
-        except ValueError as e:
+        except (ValueError, storage_service.StorageError) as e:
             conn.rollback()
             conn.close()
-            flash(str(e), "error")
+            _cleanup_uploaded_files(uploaded_files)
+            if isinstance(e, storage_service.StorageError):
+                app.logger.error("Request attachment storage failed: %s", e)
+                flash("File storage is temporarily unavailable. Please try again.", "error")
+            else:
+                flash(str(e), "error")
             return render_template(
                 "resident/request_form.html", types=REQUEST_TYPES, form=request.form,
                 civil_status_options=CIVIL_STATUS_OPTIONS, id_types=VALID_ID_TYPES,
@@ -1848,20 +1884,27 @@ def new_complaint(user):
         "INSERT OR IGNORE INTO community_issue_follows (user_id, community_issue_id) VALUES (?,?)",
         (user["id"], issue_id),
     )
+    uploaded_files = []
     try:
         submitted_files = validate_complaint_attachment_files(request.files.getlist("attachments"))
         for f in submitted_files:
             saved = save_upload(f, "complaints", allowed_ext=COMPLAINT_ATTACHMENT_EXT, max_size=MAX_FILE_SIZE)
             if saved:
                 orig, stored = saved
+                uploaded_files.append(("complaints", stored))
                 conn.execute(
                     "INSERT INTO complaint_files (complaint_id, filename, stored_name) VALUES (?,?,?)",
                     (c_id, orig, stored),
                 )
-    except ValueError as e:
+    except (ValueError, storage_service.StorageError) as e:
         conn.rollback()
         conn.close()
-        flash(str(e), "error")
+        _cleanup_uploaded_files(uploaded_files)
+        if isinstance(e, storage_service.StorageError):
+            app.logger.error("Complaint evidence storage failed: %s", e)
+            flash("File storage is temporarily unavailable. Please try again.", "error")
+        else:
+            flash(str(e), "error")
         return render_template("resident/complaint_form.html", categories=COMPLAINT_CATEGORIES, form=request.form,
                                daily_remaining=daily_remaining, daily_limit=COMPLAINT_DAILY_LIMIT,
                                daily_limit_reached=False, reset_seconds=reset_seconds)
@@ -1914,8 +1957,16 @@ def view_complaint(user, complaint_id):
     files = conn.execute("SELECT * FROM complaint_files WHERE complaint_id=?", (complaint_id,)).fetchall()
     evidence = []
     for f in files:
-        path = os.path.join(UPLOAD_DIR, "complaints", f["stored_name"])
-        size = os.path.getsize(path) if os.path.isfile(path) else 0
+        try:
+            size = storage_service.file_size(
+                "complaints", f["stored_name"], upload_root=UPLOAD_DIR
+            )
+        except storage_service.StorageNotFound:
+            size = 0
+        except storage_service.StorageError as error:
+            app.logger.error("Complaint evidence storage request failed: %s", error)
+            conn.close()
+            abort(502)
         ext = (f["filename"] or "").rsplit(".", 1)[-1].lower() if "." in (f["filename"] or "") else ""
         evidence.append({
             **dict(f),
@@ -1972,8 +2023,12 @@ def profile(user):
                 photo, "profiles", allowed_ext=PROFILE_IMAGE_EXT,
                 max_size=PROFILE_IMAGE_MAX_SIZE, strict_type=True,
             )
-        except ValueError as e:
-            flash(str(e), "error")
+        except (ValueError, storage_service.StorageError) as e:
+            if isinstance(e, storage_service.StorageError):
+                app.logger.error("Profile photo storage failed: %s", e)
+                flash("File storage is temporarily unavailable. Please try again.", "error")
+            else:
+                flash(str(e), "error")
             conn.close()
             return redirect(url_for("profile"))
         _, stored_name = saved
@@ -2797,7 +2852,12 @@ def admin_settings(user):
 @login_required("admin")
 def create_backup(user):
     """Take a fresh backup right now and download it."""
-    path = dbh.backup_database()
+    try:
+        path = dbh.backup_database()
+    except (OSError, RuntimeError) as error:
+        app.logger.error("Database backup failed: %s", error)
+        flash("The database backup could not be completed. Check server configuration.", "error")
+        return redirect(url_for("admin_settings"))
     conn = dbh.get_db()
     dbh.log_action(conn, user, "Downloaded database backup", target=os.path.basename(path))
     conn.commit()
@@ -3820,8 +3880,7 @@ def serve_upload(user, subdir, stored_name):
         abort(404)
 
     safe_name = os.path.basename(stored_name)
-    path = os.path.abspath(os.path.join(UPLOAD_DIR, subdir, safe_name))
-    if os.path.commonpath([UPLOAD_DIR, path]) != os.path.abspath(UPLOAD_DIR):
+    if safe_name != stored_name:
         abort(403)
 
     record = None
@@ -3859,13 +3918,26 @@ def serve_upload(user, subdir, stored_name):
     elif user["role"] == "admin":
         pass
 
-    if not os.path.isfile(path):
+    try:
+        file_data = storage_service.download(
+            subdir, safe_name, upload_root=UPLOAD_DIR
+        )
+    except storage_service.StorageNotFound:
         abort(404)
+    except storage_service.StorageError as error:
+        app.logger.error("File storage request failed: %s", error)
+        abort(502)
 
+    filename = record["filename"] if subdir in {"requests", "complaints"} else safe_name
+    mimetype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     if record and subdir in {"requests", "complaints"}:
-        filename = record["filename"]
-        return send_file(path, as_attachment=True, download_name=filename)
-    return send_file(path)
+        return send_file(
+            io.BytesIO(file_data),
+            mimetype=mimetype,
+            as_attachment=True,
+            download_name=filename,
+        )
+    return send_file(io.BytesIO(file_data), mimetype=mimetype)
 
 
 # ------------------------------------------------------------- JSON API ---
@@ -4008,8 +4080,17 @@ def request_entity_too_large(e):
 
 
 if __name__ == "__main__":
-    if not os.path.isfile(dbh.DB_PATH):
-        dbh.init_db()
-    else:
+    if dbh.get_backend() == "postgres":
+        dbh.ensure_postgres_schema()
+    elif os.path.isfile(dbh.DB_PATH):
         dbh.migrate_db()
+    elif os.environ.get("RENDER", "").lower() == "true" or os.environ.get(
+        "APP_ENV", ""
+    ).lower() == "production":
+        raise RuntimeError(
+            "The configured SQLite database is missing. Production startup "
+            "will not create or replace it automatically."
+        )
+    else:
+        dbh.init_db()
     app.run(debug=os.environ.get("FLASK_DEBUG", "0") == "1", host="127.0.0.1", port=5000, use_reloader=False)

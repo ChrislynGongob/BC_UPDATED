@@ -36,7 +36,7 @@ class FoundingAdminSetupTests(unittest.TestCase):
         dbh.DB_PATH = self.old_db_path
         self.temp_dir.cleanup()
 
-    def test_updates_existing_founder_in_place_and_preserves_related_records(self):
+    def test_existing_founder_and_password_are_never_overwritten(self):
         conn = dbh.get_db()
         founder_id = conn.execute(
             "INSERT INTO users (full_name,email,password_hash,role,is_super_admin) "
@@ -59,18 +59,20 @@ class FoundingAdminSetupTests(unittest.TestCase):
         conn.commit()
         conn.close()
 
-        setup_founding_admin()
+        with self.assertRaisesRegex(RuntimeError, "already exists"):
+            setup_founding_admin()
 
         conn = dbh.get_db()
         account = conn.execute(
             "SELECT * FROM users WHERE id=?", (founder_id,)
         ).fetchone()
-        self.assertEqual(account["email"], FOUNDING_ADMIN_EMAIL)
-        self.assertEqual(account["recovery_email"], FOUNDING_ADMIN_EMAIL)
+        self.assertEqual(account["email"], "old-founder@example.test")
+        self.assertIsNone(account["recovery_email"])
+        self.assertTrue(check_password_hash(account["password_hash"], "old-password"))
+        self.assertFalse(check_password_hash(account["password_hash"], self.password))
         self.assertEqual(account["role"], "admin")
         self.assertEqual(account["is_super_admin"], 1)
-        self.assertEqual(account["must_reset_pw"], 1)
-        self.assertTrue(check_password_hash(account["password_hash"], self.password))
+        self.assertEqual(account["must_reset_pw"], 0)
         self.assertEqual(
             conn.execute(
                 "SELECT COUNT(*) FROM users WHERE role='admin' AND is_super_admin=1"
@@ -89,6 +91,13 @@ class FoundingAdminSetupTests(unittest.TestCase):
                 (founder_id, "Existing audit history"),
             ).fetchone()[0],
             1,
+        )
+        self.assertEqual(
+            conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE actor_id=? AND action LIKE 'Updated Founding Admin%'",
+                (founder_id,),
+            ).fetchone()[0],
+            0,
         )
         conn.close()
 

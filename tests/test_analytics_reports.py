@@ -441,11 +441,23 @@ class AnalyticsReportTests(unittest.TestCase):
         self.assertIn('counter(page)', print_css)
         self.assertIn("print-color-adjust: exact", print_css)
         self.assertIn("#admin-report-analytics {", print_css)
-        self.assertIn(".report-analytics-chart-card { break-inside: auto; }", print_css)
-        self.assertIn(".report-analytics-chart { break-inside: avoid; }", print_css)
         self.assertRegex(
             print_css,
-            r"\.analytics-line-chart svg,\s*\.report-analytics-chart svg\s*\{"
+            r"\.report-analytics-chart-card\s*\{[^}]*\bbreak-inside:\s*auto\s*;",
+        )
+        self.assertRegex(
+            print_css,
+            r"\.report-analytics-chart\s*\{[^}]*\bbreak-inside:\s*avoid\s*;",
+        )
+        self.assertRegex(
+            print_css,
+            r"\.analytics-line-chart\s+svg\s*\{"
+            r"[^}]*width: 100% !important;[^}]*max-width: 100% !important;"
+            r"[^}]*height: auto !important;",
+        )
+        self.assertRegex(
+            print_css,
+            r"\.report-analytics-chart\s+svg\s*\{"
             r"[^}]*width: 100% !important;[^}]*max-width: 100% !important;"
             r"[^}]*height: auto !important;",
         )

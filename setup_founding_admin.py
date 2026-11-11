@@ -34,11 +34,20 @@ def setup_founding_admin():
             "one letter, and one number."
         )
 
-    os.makedirs(os.path.dirname(dbh.DB_PATH), exist_ok=True)
-    database_exists = os.path.isfile(dbh.DB_PATH)
-    if not database_exists:
-        dbh.init_db()
-    dbh.migrate_db()
+    if dbh.get_backend() == "postgres":
+        dbh.ensure_postgres_schema()
+    else:
+        database_exists = os.path.isfile(dbh.DB_PATH)
+        if not database_exists:
+            if os.environ.get("RENDER", "").lower() == "true" or os.environ.get(
+                "APP_ENV", ""
+            ).lower() == "production":
+                raise RuntimeError(
+                    "The production SQLite database is missing; refusing to create it."
+                )
+            os.makedirs(os.path.dirname(dbh.DB_PATH), exist_ok=True)
+            dbh.init_db()
+        dbh.migrate_db()
 
     conn = dbh.get_db()
     try:
@@ -70,19 +79,10 @@ def setup_founding_admin():
                 raise ValueError(
                     "The designated email belongs to another account; no account was changed."
                 )
-
-            conn.execute(
-                "UPDATE users SET full_name=?, email=?, recovery_email=?, password_hash=?, "
-                "must_reset_pw=1, failed_logins=0, locked_until=NULL WHERE id=?",
-                (
-                    name,
-                    FOUNDING_ADMIN_EMAIL,
-                    FOUNDING_ADMIN_EMAIL,
-                    generate_password_hash(password),
-                    founder["id"],
-                ),
+            raise RuntimeError(
+                "A Founding Admin already exists; no account or password was changed. "
+                "Use the account recovery flow if access is needed."
             )
-            action = "Updated Founding Admin account and required initial password change"
         else:
             existing_admin = conn.execute(
                 "SELECT id FROM users WHERE role='admin' LIMIT 1"

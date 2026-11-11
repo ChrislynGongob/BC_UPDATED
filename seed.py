@@ -1,8 +1,8 @@
 """
-Seeds BarangayConnect with demo accounts and sample data so you can try
-every role immediately. Safe to re-run: it wipes and rebuilds the database.
+Seeds a new, empty SQLite database with demo accounts and sample data.
 
 Usage:  python3 seed.py
+This script refuses to run when its database already exists.
 """
 import os
 import random
@@ -40,6 +40,17 @@ def _make_placeholder_upload():
 
 
 def run():
+    if dbh.get_backend() != "sqlite":
+        raise RuntimeError("Demo seed data may only be created in a SQLite development database.")
+    if os.environ.get("RENDER", "").lower() == "true" or os.environ.get(
+        "APP_ENV", ""
+    ).lower() == "production":
+        raise RuntimeError("Demo seed data is disabled in production.")
+    if os.path.exists(dbh.DB_PATH):
+        raise FileExistsError(
+            "The database already exists; seed.py will not delete or overwrite it."
+        )
+
     demo_passwords = {
         "admin": os.environ.get("DEMO_ADMIN_PASSWORD", ""),
         "staff": os.environ.get("DEMO_STAFF_PASSWORD", ""),
@@ -56,8 +67,6 @@ def run():
                 "one letter, and one number."
             )
 
-    if os.path.isfile(dbh.DB_PATH):
-        os.remove(dbh.DB_PATH)
     dbh.init_db()
     _make_placeholder_upload()
     conn = dbh.get_db()

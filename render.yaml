@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: barangayconnect
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --threads 4 --timeout 120
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DB_BACKEND
+        value: postgres
+      - key: DATABASE_URL
+        sync: false
+      - key: STORAGE_BACKEND
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET_REQUESTS
+        value: barangayconnect-requests
+      - key: SUPABASE_STORAGE_BUCKET_COMPLAINTS
+        value: barangayconnect-complaints
+      - key: SUPABASE_STORAGE_BUCKET_PROFILES
+        value: barangayconnect-profiles
+      - key: SECRET_KEY
+        generateValue: true

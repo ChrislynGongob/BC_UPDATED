@@ -3,17 +3,255 @@ import os
 import re
 import random
 import string
+import shutil
+import subprocess
 from datetime import datetime, timedelta
+from urllib.parse import unquote, urlsplit
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "instance", "barangayconnect.db")
 SCHEMA_PATH = os.path.join(BASE_DIR, "schema.sql")
 BACKUP_KEEP = 14                 # newest N backups are kept, older ones are deleted
 AUTO_BACKUP_EVERY_HOURS = 24
-_BACKUP_RE = re.compile(r"^barangayconnect-\d{4}-\d{2}-\d{2}_\d{6}(-\d+)?\.db$")
+_BACKUP_RE = re.compile(
+    r"^barangayconnect-\d{4}-\d{2}-\d{2}_\d{6}(-\d+)?\.(?:db|dump)$"
+)
+
+
+def get_backend():
+    backend = os.environ.get("DB_BACKEND", "sqlite").strip().lower()
+    if backend not in {"sqlite", "postgres"}:
+        raise ValueError("DB_BACKEND must be either 'sqlite' or 'postgres'.")
+    return backend
+
+
+class _CompatRow(dict):
+    def __init__(self, names, values):
+        super().__init__(zip(names, values))
+        self._values = values
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return super().__getitem__(key)
+
+
+def _postgres_row_factory(cursor):
+    names = [column.name for column in cursor.description]
+    return lambda values: _CompatRow(names, values)
+
+
+def _postgres_sql(sql):
+    sql = sql.strip()
+    if re.match(r"^BEGIN\s+IMMEDIATE$", sql, flags=re.IGNORECASE):
+        # Preserve SQLite's writer serialization for the small critical sections using this statement.
+        return "SELECT pg_advisory_xact_lock(195215649, 1)"
+
+    ignore_insert = re.match(r"^(INSERT)\s+OR\s+IGNORE\s+INTO\b", sql, flags=re.IGNORECASE)
+    if ignore_insert:
+        sql = re.sub(
+            r"^INSERT\s+OR\s+IGNORE\s+INTO\b",
+            "INSERT INTO",
+            sql,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+
+    sql = re.sub(
+        r"\bdatetime\(\s*'now'\s*,\s*'([+-]\d+)\s+(hours?|days?)'\s*\)",
+        lambda match: "(clock_timestamp() + INTERVAL "
+        + repr(f"{match.group(1)} {match.group(2).rstrip('s')}s")
+        + ")",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bdate\(\s*'now'\s*,\s*'([+-]\d+)\s+(hours?|days?)'\s*\)",
+        lambda match: "(clock_timestamp() + INTERVAL "
+        + repr(f"{match.group(1)} {match.group(2).rstrip('s')}s")
+        + ")::date",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bdate\(\s*([A-Za-z_][A-Za-z_0-9.]*)\s*,\s*'([+-]\d+)\s+(hours?|days?)'\s*\)",
+        lambda match: "(" + match.group(1) + "::timestamp + INTERVAL "
+        + repr(f"{match.group(2)} {match.group(3).rstrip('s')}s")
+        + ")::date",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bdatetime\(\s*'now'\s*\)",
+        "to_char(clock_timestamp(), 'YYYY-MM-DD HH24:MI:SS')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bdatetime\(\s*([A-Za-z_][A-Za-z_0-9.]*)\s*\)",
+        r"\1::timestamp",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bdate\(\s*'now'\s*\)",
+        "(clock_timestamp())::date",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bstrftime\(\s*'%Y-%m'\s*,\s*([A-Za-z_][A-Za-z_0-9.]*)\s*\)",
+        r"to_char(\1::timestamp, 'YYYY-MM')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"([A-Za-z_][A-Za-z_0-9.]*::timestamp\s*(?:>=|<=|<>|!=|=|>|<)\s*)\?",
+        r"\1?::timestamp",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bMIN\(\s*([A-Za-z_][A-Za-z_0-9.]*)\s*,",
+        r"LEAST(\1,",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(
+        r"\bMAX\(\s*([A-Za-z_][A-Za-z_0-9.]*)\s*,",
+        r"GREATEST(\1,",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    sql = re.sub(r"\b([A-Za-z_][A-Za-z_0-9.]*)\s+COLLATE\s+NOCASE\b", r"LOWER(\1)", sql)
+
+    output = []
+    quote = None
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if quote:
+            output.append(char)
+            if char == quote:
+                if index + 1 < len(sql) and sql[index + 1] == quote:
+                    output.append(sql[index + 1])
+                    index += 1
+                else:
+                    quote = None
+        elif sql.startswith("--", index):
+            newline = sql.find("\n", index)
+            end = len(sql) if newline == -1 else newline
+            output.append(sql[index:end])
+            index = end - 1
+        elif sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            if end == -1:
+                output.append(sql[index:])
+                break
+            output.append(sql[index : end + 2])
+            index = end + 1
+        elif char in {"'", '"'}:
+            quote = char
+            output.append(char)
+        elif char == "?":
+            output.append("%s")
+        elif char.isalpha() or char == "_":
+            end = index + 1
+            while end < len(sql) and (sql[end].isalnum() or sql[end] in {"_", "$"}):
+                end += 1
+            keyword = sql[index:end]
+            output.append("ILIKE" if keyword.upper() == "LIKE" else keyword)
+            index = end - 1
+        else:
+            output.append(char)
+        index += 1
+    return "".join(output)
+
+
+class _PostgresCursor:
+    def __init__(self, connection, cursor, table_name=None):
+        self._connection = connection
+        self._cursor = cursor
+        self._table_name = table_name
+
+    @property
+    def lastrowid(self):
+        if not self._table_name:
+            raise RuntimeError("lastrowid is only available after an INSERT statement.")
+        row = self._connection.execute(
+            "SELECT currval(pg_get_serial_sequence(%s, 'id')) AS id",
+            (f"public.{self._table_name}",),
+        ).fetchone()
+        return row["id"]
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def __iter__(self):
+        return iter(self._cursor)
+
+
+class _PostgresConnection:
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, params=()):
+        match = re.match(
+            r"\s*INSERT\s+(?:OR\s+IGNORE\s+)?INTO\s+(?:\"?public\"?\.)?\"?([A-Za-z_][A-Za-z_0-9]*)",
+            sql,
+            flags=re.IGNORECASE,
+        )
+        cursor = self._connection.cursor()
+        cursor.execute(_postgres_sql(sql), params)
+        return _PostgresCursor(self, cursor, match.group(1) if match else None)
+
+    def executemany(self, sql, params):
+        cursor = self._connection.cursor()
+        cursor.executemany(_postgres_sql(sql), params)
+        return _PostgresCursor(self, cursor)
+
+    @property
+    def in_transaction(self):
+        from psycopg.pq import TransactionStatus
+
+        return self._connection.info.transaction_status != TransactionStatus.IDLE
+
+    def commit(self):
+        self._connection.commit()
+
+    def rollback(self):
+        self._connection.rollback()
+
+    def close(self):
+        try:
+            if self.in_transaction:
+                self.rollback()
+        finally:
+            self._connection.close()
 
 
 def get_db():
+    if get_backend() == "postgres":
+        database_url = os.environ.get("DATABASE_URL", "").strip()
+        if not database_url:
+            raise RuntimeError("DATABASE_URL is required when DB_BACKEND=postgres.")
+        import psycopg
+        from psycopg.conninfo import make_conninfo
+
+        connection = psycopg.connect(
+            make_conninfo(database_url, sslmode="require"),
+            row_factory=_postgres_row_factory,
+        )
+        return _PostgresConnection(connection)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -21,6 +259,10 @@ def get_db():
 
 
 def init_db():
+    if get_backend() != "sqlite":
+        raise RuntimeError(
+            "PostgreSQL schema creation is explicit; apply postgres_schema.sql manually."
+        )
     os.makedirs(os.path.join(BASE_DIR, "instance"), exist_ok=True)
     conn = get_db()
     with open(SCHEMA_PATH, "r") as f:
@@ -29,8 +271,34 @@ def init_db():
     conn.close()
 
 
+def ensure_postgres_schema():
+    if get_backend() != "postgres":
+        return
+    import psycopg
+
+    conn = get_db()
+    try:
+        conn.execute("SELECT id FROM users LIMIT 0").fetchall()
+    except psycopg.errors.UndefinedTable as error:
+        raise RuntimeError(
+            "The PostgreSQL schema is missing. Apply postgres_schema.sql explicitly; "
+            "the application will not initialize it automatically."
+        ) from error
+    finally:
+        conn.close()
+
+
 def migrate_db():
     """Upgrade an existing database in place. Safe to run on every start."""
+    if get_backend() != "sqlite":
+        raise RuntimeError(
+            "Automatic PostgreSQL schema migrations are disabled; review and apply "
+            "postgres_schema.sql explicitly."
+        )
+    if not os.path.isfile(DB_PATH):
+        raise FileNotFoundError(
+            "SQLite database is missing; migrate_db will not create it."
+        )
     conn = get_db()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS password_reset_tokens (
@@ -482,9 +750,13 @@ def backup_dir():
 
 
 def backup_database(keep=None):
-    """Make a consistent copy of the live database using SQLite's online backup API
-    (safe even while the app is writing). Returns the new backup's file path.
-    Old backups beyond `keep` are deleted."""
+    """Create a SQLite online backup or a PostgreSQL pg_dump file."""
+    if get_backend() == "postgres":
+        return _backup_postgres(keep)
+    if not os.path.isfile(DB_PATH):
+        raise FileNotFoundError(
+            "SQLite database is missing; refusing to create an empty backup."
+        )
     folder = backup_dir()
     keep = BACKUP_KEEP if keep is None else keep
     os.makedirs(folder, exist_ok=True)
@@ -502,6 +774,78 @@ def backup_database(keep=None):
         dst.close()
         src.close()
     for old in list_backups()[keep:]:     # newest first -> drop the oldest
+        try:
+            os.remove(os.path.join(folder, old))
+        except OSError:
+            pass
+    return dest
+
+
+def _backup_postgres(keep=None):
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    parsed = urlsplit(database_url)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+        raise RuntimeError("DATABASE_URL is not a valid PostgreSQL connection URL.")
+    executable = os.environ.get("PG_DUMP_PATH") or shutil.which("pg_dump")
+    if not executable:
+        raise RuntimeError(
+            "PostgreSQL backup requires pg_dump; configure PG_DUMP_PATH or use "
+            "the managed Supabase backup workflow."
+        )
+
+    folder = backup_dir()
+    keep = BACKUP_KEEP if keep is None else keep
+    os.makedirs(folder, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    dest = os.path.join(folder, f"barangayconnect-{stamp}.dump")
+    suffix = 1
+    while os.path.exists(dest):
+        dest = os.path.join(folder, f"barangayconnect-{stamp}-{suffix}.dump")
+        suffix += 1
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in {"PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "PGSSLROOTCERT"}
+    }
+    env.update(
+        {
+            "PGHOST": parsed.hostname,
+            "PGPORT": str(parsed.port or 5432),
+            "PGUSER": unquote(parsed.username or ""),
+            "PGDATABASE": unquote(parsed.path.lstrip("/")),
+            "PGPASSWORD": unquote(parsed.password or ""),
+            "PGSSLMODE": "require",
+        }
+    )
+    try:
+        result = subprocess.run(
+            [
+                executable,
+                "--format=custom",
+                "--no-owner",
+                "--no-acl",
+                "--file",
+                dest,
+            ],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=600,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        if os.path.exists(dest):
+            os.remove(dest)
+        raise RuntimeError("PostgreSQL backup could not be completed.") from error
+    if result.returncode:
+        if os.path.exists(dest):
+            os.remove(dest)
+        raise RuntimeError(
+            f"pg_dump failed with exit code {result.returncode}; no backup was retained."
+        )
+
+    for old in list_backups()[keep:]:
         try:
             os.remove(os.path.join(folder, old))
         except OSError:
@@ -531,6 +875,8 @@ def auto_backup_if_due(now_ts=None):
     before_request hook, checks at most once an hour, and only backs up when the
     newest backup is older than AUTO_BACKUP_EVERY_HOURS. Never raises."""
     global _last_auto_check
+    if get_backend() == "postgres":
+        return None
     import time
     now_ts = time.time() if now_ts is None else now_ts
     if now_ts - _last_auto_check < 3600:
