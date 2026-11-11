@@ -189,6 +189,59 @@ class AnalyticsReportTests(unittest.TestCase):
         ).get_json()
         self.assertEqual(custom["total"], 2)
 
+    def test_analytics_sorting_is_case_insensitive_without_alias_ordering(self):
+        labels = ("beta", "alpha", "Alpha")
+        for index, label in enumerate(labels):
+            self.add_complaint(
+                f"SORT-C-{index}", label, "2098-01-01 08:00:00"
+            )
+            self.add_request(
+                f"SORT-R-{index}", label, "2098-01-01 08:00:00",
+                purpose=label,
+            )
+        filters = A.complaint_analytics_service.current_filters(
+            {"period": "daily", "daily_date": "2098-01-01"}
+        )
+        conn = dbh.get_db()
+        statements = []
+
+        class RecordingConnection:
+            def execute(self, sql, params=()):
+                statements.append(sql)
+                return conn.execute(sql, params)
+
+        try:
+            complaint_payload = A.complaint_analytics_service.build_payload(
+                RecordingConnection(), self.admin_id, filters, "complaints"
+            )
+            request_payload = A.complaint_analytics_service.build_payload(
+                RecordingConnection(), self.admin_id, filters, "document-requests"
+            )
+            purpose_payload = A.complaint_analytics_service.build_purpose_payload(
+                RecordingConnection(), filters
+            )
+        finally:
+            conn.close()
+
+        expected = [("Alpha", 1), ("alpha", 1), ("beta", 1)]
+        self.assertEqual(
+            [(row["label"], row["count"]) for row in complaint_payload["items"]],
+            expected,
+        )
+        self.assertEqual(
+            [(row["label"], row["count"]) for row in request_payload["items"]],
+            expected,
+        )
+        self.assertEqual(
+            [(row["purpose"], row["count"]) for row in purpose_payload["items"]],
+            expected,
+        )
+        translated_statements = [dbh._postgres_sql(statement) for statement in statements]
+        self.assertTrue(any("LOWER(COALESCE(NULLIF(category" in sql for sql in translated_statements))
+        self.assertTrue(any("LOWER(COALESCE(NULLIF(TRIM(purpose)" in sql for sql in translated_statements))
+        self.assertFalse(any("LOWER(label)" in sql for sql in translated_statements))
+        self.assertFalse(any("LOWER(purpose)" in sql for sql in translated_statements))
+
     def test_document_request_analytics_counts_by_type_and_philippine_boundaries(self):
         self.add_request(
             "R-UTC-BEFORE", "Before PH month", "2024-01-31 15:59:59",

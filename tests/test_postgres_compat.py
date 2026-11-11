@@ -12,6 +12,21 @@ import seed
 
 
 class PostgreSQLTranslationTests(unittest.TestCase):
+    def test_row_factory_handles_commands_without_result_columns(self):
+        row_factory = dbh._postgres_row_factory(Mock(description=None))
+        self.assertEqual(row_factory((1, "affected")), (1, "affected"))
+
+    def test_row_factory_preserves_dictionary_rows_for_result_columns(self):
+        id_column = Mock()
+        id_column.name = "id"
+        name_column = Mock()
+        name_column.name = "name"
+        cursor = Mock(description=(id_column, name_column))
+        row_factory = dbh._postgres_row_factory(cursor)
+        row = row_factory((7, "Resident"))
+        self.assertEqual(row["id"], 7)
+        self.assertEqual(row[0], 7)
+
     def test_placeholders_in_literals_are_preserved(self):
         translated = dbh._postgres_sql(
             "SELECT '?' AS literal, value FROM sample WHERE id=? AND note='it''s ?'"

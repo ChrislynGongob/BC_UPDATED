@@ -37,6 +37,8 @@ class _CompatRow(dict):
 
 
 def _postgres_row_factory(cursor):
+    if cursor.description is None:
+        return lambda values: values
     names = [column.name for column in cursor.description]
     return lambda values: _CompatRow(names, values)
 

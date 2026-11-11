@@ -123,19 +123,25 @@ def build_payload(conn, admin_id, filters, module):
     if config is None:
         raise ValueError("Choose a valid analytics module.")
     start_utc, end_utc = period_utc_bounds(filters)
+    label_expression = (
+        f"COALESCE(NULLIF({config['field']}, ''), 'Unspecified')"
+    )
+    label_sort_expression = f"LOWER({label_expression})"
     rows = conn.execute(
-        f"SELECT COALESCE(NULLIF({config['field']}, ''), 'Unspecified') AS label, COUNT(*) AS count "
+        f"SELECT {label_expression} AS label, COUNT(*) AS count "
         f"FROM {config['table']} WHERE datetime(created_at)>=? AND datetime(created_at)<? "
-        f"GROUP BY COALESCE(NULLIF({config['field']}, ''), 'Unspecified') "
-        "ORDER BY count DESC, label COLLATE NOCASE ASC, label ASC",
+        f"GROUP BY {label_expression}, {label_sort_expression} "
+        f"ORDER BY count DESC, {label_sort_expression} ASC, {label_expression} ASC",
         (start_utc, end_utc),
     ).fetchall()
     items = [dict(label=row["label"], count=row["count"]) for row in rows]
     all_labels = [
         row["label"]
         for row in conn.execute(
-            f"SELECT DISTINCT COALESCE(NULLIF({config['field']}, ''), 'Unspecified') AS label "
-            f"FROM {config['table']} ORDER BY label COLLATE NOCASE ASC, label ASC"
+            f"SELECT label FROM ("
+            f"SELECT DISTINCT {label_expression} AS label, "
+            f"{label_sort_expression} AS sort_label FROM {config['table']}"
+            ") labels ORDER BY sort_label ASC, label ASC"
         ).fetchall()
     ]
     saved = {
@@ -204,19 +210,23 @@ def build_purpose_payload(conn, filters, allowed_types=None, document_type="", o
     scope_where = " AND ".join(scope_clauses) if scope_clauses else "1=1"
     date_params = [start_utc, end_utc] + scope_params
     purpose_expression = "COALESCE(NULLIF(TRIM(purpose), ''), 'Unspecified')"
+    purpose_sort_expression = f"LOWER({purpose_expression})"
     rows = conn.execute(
         f"SELECT {purpose_expression} AS purpose, COUNT(*) AS count FROM requests "
         "WHERE datetime(created_at)>=? AND datetime(created_at)<? "
         f"AND {scope_where} "
-        f"GROUP BY {purpose_expression} "
-        "ORDER BY count DESC, purpose COLLATE NOCASE ASC, purpose ASC",
+        f"GROUP BY {purpose_expression}, {purpose_sort_expression} "
+        f"ORDER BY count DESC, {purpose_sort_expression} ASC, {purpose_expression} ASC",
         date_params,
     ).fetchall()
     labels = [
         row["purpose"]
         for row in conn.execute(
-            f"SELECT DISTINCT {purpose_expression} AS purpose FROM requests "
-            f"WHERE {scope_where} ORDER BY purpose COLLATE NOCASE ASC, purpose ASC",
+            "SELECT purpose FROM ("
+            f"SELECT DISTINCT {purpose_expression} AS purpose, "
+            f"{purpose_sort_expression} AS sort_label FROM requests "
+            f"WHERE {scope_where}"
+            ") purposes ORDER BY sort_label ASC, purpose ASC",
             scope_params,
         ).fetchall()
     ]
