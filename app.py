@@ -25,6 +25,7 @@ import db as dbh
 import chatbot
 import priority as prioritymod
 import email_service
+from admin_mfa import register_admin_mfa
 import complaint_analytics as complaint_analytics_service
 import storage as storage_service
 
@@ -175,6 +176,7 @@ if not _secret_key and (
 ):
     raise RuntimeError("SECRET_KEY must be configured before production startup.")
 app.secret_key = _secret_key or "dev-secret-key-change-in-production"
+_start_admin_mfa, _admin_reset_mfa_valid = register_admin_mfa(app, dbh, email_service)
 _db_ready = False
 _db_startup_lock = threading.Lock()
 
@@ -214,7 +216,10 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE + 1024
 
 @app.after_request
 def _protect_password_reset_response(response):
-    if request.endpoint in {"forgot_password", "reset_password", "reset_password_code"}:
+    if request.endpoint in {
+        "forgot_password", "reset_password", "reset_password_code",
+        "verify_otp", "resend_otp", "first_login_reset",
+    }:
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
     return response
@@ -893,6 +898,8 @@ def login():
 
         dbh.clear_failed_logins(conn, user["id"])
         conn.close()
+        if user["role"] == "admin":
+            return _start_admin_mfa(user)
         if user["must_reset_pw"]:
             session["pending_reset_user"] = user["id"]
             return redirect(url_for("first_login_reset"))
@@ -915,7 +922,7 @@ def first_login_reset():
         (user_id,),
     ).fetchone()
     conn.close()
-    if not user:
+    if not user or not _admin_reset_mfa_valid(user):
         session.pop("pending_reset_user", None)
         return redirect(url_for("login"))
     if request.method == "POST":
@@ -934,7 +941,7 @@ def first_login_reset():
             "AND status='active' AND must_reset_pw=1",
             (user_id,),
         ).fetchone()
-        if not user:
+        if not user or not _admin_reset_mfa_valid(user):
             conn.rollback()
             conn.close()
             session.pop("pending_reset_user", None)
@@ -946,7 +953,7 @@ def first_login_reset():
         dbh.log_action(conn, user, "Changed initial password on first login")
         conn.commit()
         conn.close()
-        session.pop("pending_reset_user", None)
+        session.clear()
         session["user_id"] = user_id
         session["role"] = user["role"]
         flash("Password set. Welcome to BarangayConnect.", "success")

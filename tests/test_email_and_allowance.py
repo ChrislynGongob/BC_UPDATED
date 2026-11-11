@@ -780,7 +780,7 @@ class SecurityAndAllowanceTests(unittest.TestCase):
         )
         self.assertEqual(expired.status_code, 400)
 
-    def test_login_authenticates_without_sending_verification_code(self):
+    def test_admin_login_requires_email_verification(self):
         email = "otp-admin@example.test"
         conn = dbh.get_db()
         conn.execute(
@@ -794,11 +794,14 @@ class SecurityAndAllowanceTests(unittest.TestCase):
         with patch.object(A.email_service, "send_email") as send_email:
             response = client.post("/login", data={"email": email, "password": "Admin@1234"})
             self.assertEqual(response.status_code, 302)
-            self.assertEqual(response.location, "/admin/dashboard")
-            self.assertEqual(client.get("/verify-otp").status_code, 404)
-            send_email.assert_not_called()
+            self.assertEqual(response.location, "/verify-otp")
+            self.assertEqual(client.get("/verify-otp").status_code, 200)
+            send_email.assert_called_once()
+            with client.session_transaction() as state:
+                self.assertNotIn("user_id", state)
+            self.assertEqual(client.get("/admin/dashboard").location, "/login")
 
-    def test_founding_admin_login_still_requires_password_change_without_otp(self):
+    def test_founding_admin_requires_otp_then_initial_password_change(self):
         email = "test-admin@example.test"
         conn = dbh.get_db()
         conn.execute(
@@ -815,9 +818,15 @@ class SecurityAndAllowanceTests(unittest.TestCase):
                 data={"email": email, "password": "Admin@1234"},
             )
             self.assertEqual(response.status_code, 302)
-            self.assertEqual(response.location, "/first-login-reset")
+            self.assertEqual(response.location, "/verify-otp")
+            send_email.assert_called_once()
+            code = re.search(r"code is (\d{6})", send_email.call_args.args[2]).group(1)
+            with client.session_transaction() as state:
+                self.assertNotIn("user_id", state)
+                csrf = state["mfa_csrf"]
+            verified = client.post("/verify-otp", data={"otp": code, "csrf_token": csrf})
+            self.assertEqual(verified.location, "/first-login-reset")
             self.assertEqual(client.get("/first-login-reset").status_code, 200)
-            send_email.assert_not_called()
 
         password = "NewFoundingPassword@123"
         response = client.post(

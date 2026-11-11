@@ -20,8 +20,9 @@ production schema automatically.
   any time from My Profile, along with contact number.
 - **Admin-only staff & administrator provisioning** (PROV-02) — no public staff/admin
   signup route exists anywhere; staff get a temp password and must set a permanent
-  one on first login. Login uses the account email and password without an email
-  verification step.
+  one on first login. Residents and staff retain their existing login flow. Admins, including the
+  Founding Admin, must verify a code sent to their registered email before login
+  completes (and before any required initial password change).
 - **Email-based password recovery** — active residents, staff, and administrators
   receive a time-limited, single-use password reset code at their registered
   email address. Only a keyed digest of the code is stored; passwords continue
@@ -373,3 +374,31 @@ and recovery guidance, see [docs/SUPABASE_MIGRATION.md](./docs/SUPABASE_MIGRATIO
   restored.
 - **Active duplicate blocking**: residents may submit an item once, but a matching request (document type and purpose) or concern (category and location) is blocked while the earlier one is active; filing is allowed again after completion or resolution.
 - Tests: `python3 -m unittest tests.test_office_access tests.test_new_features tests.test_email_and_allowance -v`
+
+## Admin email MFA
+
+Admin login uses the existing SMTP/Brevo configuration in `email_service.py` and
+`admin_otp_challenges` table, already defined for SQLite and PostgreSQL. No new
+schema, data migration, or dependency is required for databases with the current
+schema. Production requires a strong, stable `SECRET_KEY`, shared by all Render
+workers, and working email configuration. No OTP is returned to the browser or
+logged. Email delivery failures deny access and invalidate the attempted code.
+
+Codes are six cryptographically random digits, stored only as an HMAC-SHA256
+digest bound to the pending browser challenge, account password, and registered
+email. They expire after five minutes and are consumed atomically. Pending login
+sessions expire after 15 minutes. A resend replaces the previous code and requires
+60 seconds between sends. Each account has a database-enforced limit of five sends
+and five incorrect attempts per one-hour window, including fresh login requests;
+resending does not reset attempts. Wait for the window to reset after exhausting
+these limits. OTP verification and resend forms require a CSRF token.
+
+Run isolated MFA tests without sending email or touching application records:
+
+```powershell
+.\venv\Scripts\python.exe -m unittest tests.test_admin_mfa -v
+```
+
+PostgreSQL operations use the existing parameterized SQL adapter and transaction
+advisory lock. Live PostgreSQL tests require an explicitly disposable database;
+never enable them against a production Supabase project.
