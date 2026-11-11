@@ -134,45 +134,109 @@ class FoundingAdminSetupTests(unittest.TestCase):
         self.assertEqual(founder["email"], "old-founder@example.test")
         conn.close()
 
-    def test_refuses_to_promote_unmarked_admin(self):
+    def test_creates_founder_alongside_existing_admin_without_changing_it(self):
         conn = dbh.get_db()
         conn.execute(
             "INSERT INTO users (full_name,email,password_hash,role) VALUES (?,?,?,'admin')",
-            ("Ordinary Admin", "ordinary@example.test", generate_password_hash("ordinary")),
+            (
+                "Ordinary Admin",
+                "ordinary@example.test",
+                generate_password_hash("ordinary-admin-password"),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO users (full_name,email,password_hash,role) "
+            "VALUES (?,?,?,'resident')",
+            (
+                "Existing Resident",
+                "resident@example.test",
+                generate_password_hash("existing-resident-password"),
+            ),
         )
         conn.commit()
+        before_accounts = {
+            row["email"]: dict(row)
+            for row in conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+        }
         conn.close()
 
-        with self.assertRaisesRegex(ValueError, "none is marked Founding Admin"):
-            setup_founding_admin()
-
-        conn = dbh.get_db()
-        self.assertEqual(
-            conn.execute(
-                "SELECT COUNT(*) FROM users WHERE role='admin' AND is_super_admin=1"
-            ).fetchone()[0],
-            0,
-        )
-        conn.close()
-
-    def test_creates_initial_founder_only_when_no_admin_exists(self):
         setup_founding_admin()
 
         conn = dbh.get_db()
-        account = conn.execute(
+        after_accounts = {
+            row["email"]: dict(row)
+            for row in conn.execute("SELECT * FROM users ORDER BY id").fetchall()
+        }
+        founder = conn.execute(
             "SELECT * FROM users WHERE email=?", (FOUNDING_ADMIN_EMAIL,)
         ).fetchone()
-        self.assertIsNotNone(account)
-        self.assertEqual(account["role"], "admin")
-        self.assertEqual(account["is_super_admin"], 1)
-        self.assertEqual(account["must_reset_pw"], 1)
-        self.assertEqual(
-            conn.execute(
-                "SELECT COUNT(*) FROM users WHERE role='admin' AND is_super_admin=1"
-            ).fetchone()[0],
-            1,
+        for email, account in before_accounts.items():
+            self.assertEqual(after_accounts[email], account)
+        self.assertEqual(founder["role"], "admin")
+        self.assertEqual(founder["is_super_admin"], 1)
+        self.assertEqual(len(after_accounts), 3)
+        self.assertTrue(
+            check_password_hash(
+                after_accounts["ordinary@example.test"]["password_hash"],
+                "ordinary-admin-password",
+            )
+        )
+        self.assertTrue(
+            check_password_hash(
+                after_accounts["resident@example.test"]["password_hash"],
+                "existing-resident-password",
+            )
         )
         conn.close()
+
+    def test_rerun_does_not_change_founder_or_reset_password(self):
+        setup_founding_admin()
+
+        conn = dbh.get_db()
+        before = dict(conn.execute(
+            "SELECT * FROM users WHERE email=?", (FOUNDING_ADMIN_EMAIL,)
+        ).fetchone())
+        audit_count = conn.execute(
+            "SELECT COUNT(*) FROM audit_logs WHERE target=?", (FOUNDING_ADMIN_EMAIL,)
+        ).fetchone()[0]
+        conn.close()
+
+        with patch.dict(
+            os.environ,
+            {
+                "FOUNDING_ADMIN_NAME": "Changed Name",
+                "FOUNDING_ADMIN_PASSWORD": "DifferentPassword456",
+            },
+        ):
+            setup_founding_admin()
+
+        conn = dbh.get_db()
+        after = dict(conn.execute(
+            "SELECT * FROM users WHERE email=?", (FOUNDING_ADMIN_EMAIL,)
+        ).fetchone())
+        self.assertEqual(after, before)
+        self.assertTrue(check_password_hash(after["password_hash"], self.password))
+        self.assertFalse(check_password_hash(after["password_hash"], "DifferentPassword456"))
+        self.assertEqual(
+            conn.execute(
+                "SELECT COUNT(*) FROM audit_logs WHERE target=?", (FOUNDING_ADMIN_EMAIL,)
+            ).fetchone()[0],
+            audit_count,
+        )
+        conn.close()
+
+    def test_requires_name_and_a_minimum_length_password(self):
+        invalid_environments = (
+            {"FOUNDING_ADMIN_NAME": "", "FOUNDING_ADMIN_PASSWORD": self.password},
+            {"FOUNDING_ADMIN_NAME": "Test Admin", "FOUNDING_ADMIN_PASSWORD": "Short1"},
+            {"FOUNDING_ADMIN_NAME": "Test Admin", "FOUNDING_ADMIN_PASSWORD": ""},
+        )
+        for environment in invalid_environments:
+            with self.subTest(environment=environment), patch.dict(
+                os.environ, environment, clear=True
+            ):
+                with self.assertRaises(ValueError):
+                    setup_founding_admin()
 
     def test_migrates_legacy_recovery_email_and_enforces_single_founder(self):
         legacy_db_path = os.path.join(self.temp_dir.name, "legacy.db")

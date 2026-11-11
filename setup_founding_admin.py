@@ -79,19 +79,18 @@ def setup_founding_admin():
                 raise ValueError(
                     "The designated email belongs to another account; no account was changed."
                 )
+            if target:
+                conn.commit()
+                print(
+                    "[SETUP] Founding Admin already exists; "
+                    "no account or password was changed."
+                )
+                return
             raise RuntimeError(
                 "A Founding Admin already exists; no account or password was changed. "
                 "Use the account recovery flow if access is needed."
             )
         else:
-            existing_admin = conn.execute(
-                "SELECT id FROM users WHERE role='admin' LIMIT 1"
-            ).fetchone()
-            if existing_admin:
-                raise ValueError(
-                    "Administrator accounts exist but none is marked Founding Admin; "
-                    "no account was promoted or changed."
-                )
             if target:
                 raise ValueError(
                     "The designated email belongs to a non-admin account; "
