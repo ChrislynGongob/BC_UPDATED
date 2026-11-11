@@ -135,6 +135,23 @@
     });
   }
 
+  function updatePrintFilter(key, value) {
+    const node = document.querySelector('[data-print-filter="' + key + '"]');
+    if (node) node.textContent = value;
+  }
+
+  function selectedPeriodLabel(formData) {
+    const selectedPeriod = formData.get("period");
+    if (selectedPeriod === "daily") return formData.get("daily_date") || "";
+    if (selectedPeriod === "monthly") return formData.get("month") || "";
+    if (selectedPeriod === "yearly") return formData.get("year") || "";
+    if (selectedPeriod === "custom") {
+      return (formData.get("analytics_start") || "") + " to " +
+        (formData.get("analytics_end") || "");
+    }
+    return selectedPeriod || "";
+  }
+
   async function loadAnalytics() {
     const requestId = ++latestRequest;
     const formData = new FormData(form);
@@ -152,6 +169,19 @@
       return;
     }
     showError("");
+    const documentSelect = form.querySelector('[name="document_type"]');
+    const officeSelect = form.querySelector('[name="office"]');
+    updatePrintFilter(
+      "purpose-document-type",
+      documentSelect.options[documentSelect.selectedIndex].textContent.trim()
+    );
+    if (officeSelect) {
+      updatePrintFilter(
+        "purpose-office",
+        officeSelect.options[officeSelect.selectedIndex].textContent.trim()
+      );
+    }
+    updatePrintFilter("purpose-period", selectedPeriodLabel(formData));
     total.textContent = String(data.total);
     leader.textContent = data.most_common_purpose || root.dataset.noLeader;
     leaderCount.textContent = data.most_common_purpose

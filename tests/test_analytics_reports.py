@@ -370,7 +370,8 @@ class AnalyticsReportTests(unittest.TestCase):
         )
         staff_page = secretary.get("/reports").get_data(as_text=True)
         self.assertIn("Requests by Purpose", staff_page)
-        self.assertIn("Purpose / Reason (x-axis)", staff_page)
+        self.assertNotIn("Purpose / Reason (x-axis)", staff_page)
+        self.assertNotIn("All statuses · Philippine time", staff_page)
         self.assertIn("Certificate of Indigency", staff_page)
         bpso_page = bpso.get("/reports").get_data(as_text=True)
         self.assertIn("Most Common Complaints", bpso_page)
@@ -388,13 +389,66 @@ class AnalyticsReportTests(unittest.TestCase):
         current_month = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m")
         html = page.get_data(as_text=True)
         self.assertIn("Requests by Purpose", html)
-        self.assertIn("Number of Requests (y-axis)", html)
+        self.assertNotIn("Number of Requests (y-axis)", html)
         month_input = re.search(
             r'<input\b[^>]*id="purpose-analytics-month"[^>]*>', html, re.DOTALL
         )
         self.assertIsNotNone(month_input)
         self.assertIn(f'value="{current_month}"', month_input.group(0))
         self.assertIn('<option value="all" selected>All offices</option>', html)
+
+    def test_print_reports_include_branded_filtered_print_layout_without_resident_details(self):
+        admin = self.client_as(self.admin_id, "admin")
+        for path, title in (
+            ("/admin/reports/complaints?period=yearly&year=2025", "Complaint Analytics"),
+            ("/admin/reports/document-requests?period=yearly&year=2025", "Document Request Analytics"),
+        ):
+            response = admin.get(path)
+            self.assertEqual(response.status_code, 200)
+            html = response.get_data(as_text=True)
+            self.assertIn("Print Report", html)
+            self.assertIn("BarangayConnect · Service Analytics", html)
+            self.assertIn(title, html)
+            self.assertIn('data-print-filter="module-period">2025', html)
+            self.assertNotIn("Analytics Resident", html)
+            self.assertNotIn("Private purpose", html)
+            if "document-requests" in path:
+                self.assertIn('data-print-filter="purpose-document-type">All documents', html)
+                self.assertIn('data-print-filter="purpose-office">All offices', html)
+                self.assertNotIn("Purpose period", html)
+
+        staff = self.client_as(self.secretary_id, "staff")
+        response = staff.get(
+            "/reports?range=custom&start_date=2025-01-01&end_date=2025-01-31"
+        )
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("Print Report", html)
+        self.assertIn("BarangayConnect · Service Analytics", html)
+        self.assertIn("Document requests by type", html)
+        self.assertIn("Requests by purpose", html)
+        self.assertIn('<dt>Document type</dt>', html)
+        self.assertIn('<dt>Office</dt>', html)
+        self.assertNotIn("Purpose document type", html)
+        self.assertNotIn("Purpose period", html)
+        self.assertIn('data-print-filter="staff-period">Custom Range', html)
+        self.assertNotIn("Analytics Resident", html)
+
+        with open(os.path.join(ROOT, "static", "css", "style.css"), encoding="utf-8") as css_file:
+            print_css = css_file.read()
+        self.assertIn("@media print", print_css)
+        self.assertIn("size: A4 portrait", print_css)
+        self.assertIn('counter(page)', print_css)
+        self.assertIn("print-color-adjust: exact", print_css)
+        self.assertIn("#admin-report-analytics {", print_css)
+        self.assertIn(".report-analytics-chart-card { break-inside: auto; }", print_css)
+        self.assertIn(".report-analytics-chart { break-inside: avoid; }", print_css)
+        self.assertRegex(
+            print_css,
+            r"\.analytics-line-chart svg,\s*\.report-analytics-chart svg\s*\{"
+            r"[^}]*width: 100% !important;[^}]*max-width: 100% !important;"
+            r"[^}]*height: auto !important;",
+        )
 
     def test_document_request_colors_are_separate_from_complaint_colors(self):
         self.add_request("R-COLOR", "Noise Complaint", "2050-01-01 00:00:00")

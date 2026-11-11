@@ -158,6 +158,23 @@
     });
   }
 
+  function updatePrintFilter(key, value) {
+    const node = document.querySelector('[data-print-filter="' + key + '"]');
+    if (node) node.textContent = value;
+  }
+
+  function selectedPeriodLabel(formData) {
+    const period = formData.get("period");
+    if (period === "daily") return formData.get("daily_date") || "";
+    if (period === "monthly") return formData.get("month") || "";
+    if (period === "yearly") return formData.get("year") || "";
+    if (period === "custom") {
+      return (formData.get("analytics_start") || "") + " to " +
+        (formData.get("analytics_end") || "");
+    }
+    return period || "";
+  }
+
   function updateChartColor(event) {
     const label = event.currentTarget.dataset.label;
     const group = Array.from(chartContainer.querySelectorAll(".report-chart-bar"))
@@ -182,6 +199,7 @@
       showError(data.error || "Unable to update analytics.");
       return;
     }
+    updatePrintFilter("module-period", selectedPeriodLabel(formData));
     totalNode.textContent = String(data.total);
     leadersNode.textContent = data.leaders.length
       ? data.leaders.join(", ")

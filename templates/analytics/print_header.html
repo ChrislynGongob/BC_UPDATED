@@ -1,0 +1,22 @@
+<header class="print-report-header">
+  <div class="print-report-brand">
+    <img src="{{ url_for('static', filename='images/barangay-seal.png') }}"
+         alt="" width="58" height="58">
+    <div>
+      <strong>{{ report_barangay_name }}</strong>
+      {% if report_barangay_address %}<span>{{ report_barangay_address }}</span>{% endif %}
+      <span>BarangayConnect · Service Analytics</span>
+    </div>
+  </div>
+  <div class="print-report-heading">
+    <h1>{{ print_report_title }}</h1>
+    <p>Generated {{ report_print_generated_at }}</p>
+  </div>
+  {% if print_filter_items %}
+  <dl class="print-report-filters">
+    {% for label, value, key in print_filter_items %}
+    <div><dt>{{ label }}</dt><dd data-print-filter="{{ key }}">{{ value }}</dd></div>
+    {% endfor %}
+  </dl>
+  {% endif %}
+</header>

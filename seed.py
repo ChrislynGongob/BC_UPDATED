@@ -215,7 +215,7 @@ def run():
         )
         dbh.notify(conn, resident_id, f"Your complaint {ref} ({category}) is now {status}.")
 
-    dbh.set_setting(conn, "barangay_name", "Barangay San Isidro")
+    dbh.set_setting(conn, "barangay_name", "Barangay Holy Spirit")
     dbh.set_setting(conn, "barangay_address", "Barangay Government Complex, Faustino St., Isidora Hills")
     dbh.set_setting(conn, "barangay_main_number", "0931-129-4693")
     dbh.set_setting(conn, "barangay_base_number", "0915-224-4744")

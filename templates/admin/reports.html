@@ -2,7 +2,7 @@
 {% block title %}Data Analytics — BarangayConnect{% endblock %}
 {% block page_title %}Data Analytics &amp; Reports{% endblock %}
 {% block content %}
-<section class="analytics-toolbar card">
+<section class="analytics-toolbar card no-print">
   <div>
     <h2>Barangay Service Analytics</h2>
     <p class="muted">Database records · {{ report.range_label }} · Generated {{ report.generated_at }}</p>
@@ -12,9 +12,13 @@
     <a class="btn btn-outline btn-sm" href="{{ export_urls.csv }}">Export CSV</a>
     <a class="btn btn-outline btn-sm" href="{{ export_urls.pdf }}">Export PDF</a>
     <a class="btn btn-outline btn-sm" href="{{ export_urls.xlsx }}">Export Excel</a>
-    <button class="btn btn-outline btn-sm no-print" type="button" onclick="window.print()">Print</button>
   </div>
 </section>
+
+<div class="report-print-actions no-print">
+  <button class="btn btn-primary" type="button" onclick="window.print()">Print Report</button>
+</div>
+{% include "analytics/print_header.html" %}
 
 {% if filter_error %}
 <div class="flash flash-error" role="alert">{{ filter_error }}</div>
@@ -234,6 +238,36 @@
   {% else %}<div class="empty-state">No monthly transaction data.</div>{% endif %}
 </section>
 {% endif %}
+
+<section class="print-only-report">
+  <h2>Detailed Counts</h2>
+  {% if complaint_access %}
+  <table class="report-analytics-data-table">
+    <caption>Complaints by category</caption>
+    <thead><tr><th scope="col">Category</th><th scope="col">Count</th></tr></thead>
+    <tbody>
+      {% for row in report.complaint_categories %}
+      <tr><th scope="row">{{ row.label }}</th><td>{{ row.count }}</td></tr>
+      {% else %}
+      <tr><td colspan="2">No matching records.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if request_types %}
+  <table class="report-analytics-data-table">
+    <caption>Document requests by type</caption>
+    <thead><tr><th scope="col">Document type</th><th scope="col">Count</th></tr></thead>
+    <tbody>
+      {% for row in report.document_types %}
+      <tr><th scope="row">{{ row.label }}</th><td>{{ row.count }}</td></tr>
+      {% else %}
+      <tr><td colspan="2">No matching records.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
 
 <script>
   (function () {

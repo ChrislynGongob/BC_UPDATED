@@ -3234,6 +3234,35 @@ def _build_report(conn, user, filters):
     }
 
 
+def _analytics_print_context():
+    conn = dbh.get_db()
+    try:
+        barangay_name = dbh.get_setting(conn, "barangay_name", "") or "BarangayConnect"
+        barangay_address = dbh.get_setting(conn, "barangay_address", "") or ""
+    finally:
+        conn.close()
+    return {
+        "report_barangay_name": barangay_name,
+        "report_barangay_address": barangay_address,
+        "report_print_generated_at": datetime.now(
+            complaint_analytics_service.PH_TIMEZONE
+        ).strftime("%Y-%m-%d %H:%M PH time"),
+    }
+
+
+def _analytics_period_label(filters):
+    period = filters["period"]
+    if period == "daily":
+        return filters["daily_date"]
+    if period == "monthly":
+        return filters["month"]
+    if period == "yearly":
+        return filters["year"]
+    if period == "custom":
+        return f"{filters['start_date']} to {filters['end_date']}"
+    return period.title()
+
+
 def _status_doughnut(rows, colors):
     total = sum(row["count"] for row in rows)
     if not total:
@@ -3292,6 +3321,37 @@ def admin_reports(user):
             purpose_payload["error"] = str(exc)
         finally:
             conn.close()
+    print_filter_items = [
+        ("Date range", report["range_label"], "staff-period"),
+        (
+            "Coverage",
+            f"{report['start_date'] or 'All time'}"
+            f"{' to ' + str(report['end_date']) if report['end_date'] else ''}",
+            "staff-coverage",
+        ),
+    ]
+    if can_handle_complaints(user):
+        print_filter_items.append(
+            ("Complaint category", filters["category"] or "All", "staff-category")
+        )
+    if purpose_types:
+        print_filter_items.append(
+            ("Overview document type", filters["document_type"] or "All", "staff-document")
+        )
+    print_filter_items.append(("Status", filters["status"] or "All", "staff-status"))
+    if purpose_types:
+        print_filter_items.extend([
+            (
+                "Document type",
+                "All documents",
+                "purpose-document-type",
+            ),
+            (
+                "Office",
+                OFFICES[user["office"]]["label"],
+                "purpose-office",
+            ),
+        ])
     return render_template(
         "admin/reports.html", report=report, filter_error=filter_error,
         export_urls=export_urls,
@@ -3307,6 +3367,9 @@ def admin_reports(user):
         purpose_document_types=purpose_types,
         purpose_offices=OFFICES,
         show_purpose_office_filter=False,
+        print_report_title="Barangay Service Analytics",
+        print_filter_items=print_filter_items,
+        **_analytics_print_context(),
     )
 
 
@@ -3359,6 +3422,26 @@ def _render_admin_report_module(user, module):
         purpose_document_types=purpose_document_types,
         purpose_offices=OFFICES,
         show_purpose_office_filter=True,
+        print_report_title=complaint_analytics_service.MODULES[module]["label"],
+        print_filter_items=[
+            ("Report period", _analytics_period_label(analytics_filters), "module-period"),
+        ] + (
+            [
+                (
+                    "Document type",
+                    purpose_document_type or "All documents",
+                    "purpose-document-type",
+                ),
+                (
+                    "Office",
+                    "All offices" if purpose_office == "all"
+                    else OFFICES[purpose_office]["label"],
+                    "purpose-office",
+                ),
+            ]
+            if module == "document-requests" else []
+        ),
+        **_analytics_print_context(),
         csrf_token=session.setdefault("admin_chart_preferences_csrf", secrets.token_urlsafe(32)),
     )
 

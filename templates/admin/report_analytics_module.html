@@ -2,6 +2,10 @@
 {% block title %}{{ module_config.label }} — BarangayConnect{% endblock %}
 {% block page_title %}{{ module_config.label }}{% endblock %}
 {% block content %}
+<div class="report-print-actions no-print">
+  <button class="btn btn-primary" type="button" onclick="window.print()">Print Report</button>
+</div>
+{% include "analytics/print_header.html" %}
 <section class="report-analytics-module card" id="admin-report-analytics"
          data-data-url="{{ url_for('admin_complaint_analytics_data') if module == 'complaints' else url_for('admin_document_request_analytics_data') }}"
          data-colors-url="{{ url_for('admin_complaint_analytics_colors') if module == 'complaints' else url_for('admin_document_request_analytics_colors') }}"
@@ -11,12 +15,11 @@
   <div class="report-analytics-header">
     <div>
       <h2>{{ module_config.label }}</h2>
-      <p class="muted">Philippine time (UTC+8) · all statuses included · based on filing date</p>
     </div>
     <a class="btn btn-outline report-analytics-back" href="{{ url_for('admin_reports') }}">← Back to Reports &amp; Analytics</a>
   </div>
 
-  <form class="card analytics-filter-form report-analytics-filter-form" method="GET"
+  <form class="card analytics-filter-form report-analytics-filter-form no-print" method="GET"
         action="{{ request.path }}" id="report-analytics-filters">
     <div class="analytics-filter-grid">
       <div class="form-row">
