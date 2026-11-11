@@ -276,10 +276,19 @@ def _insert_source(connection, source_path, source_report):
 def _postgres_table_report(connection, table, source_report):
     columns = source_report["tables"][table]["columns"]
     keys = source_report["tables"][table]["primary_key"]
+
     select_columns = ", ".join(f'"{column}"' for column in columns)
-    ordering = ", ".join(f'"{column}"' for column in keys)
+
+    ordering = ", ".join(
+        f'"{column}" COLLATE "C"'
+        if table == "settings" and column == "key"
+        else f'"{column}"'
+        for column in keys
+    )
+
     digest = hashlib.sha256()
     count = 0
+
     cursor = connection.execute(
         f'SELECT {select_columns} FROM public."{table}" ORDER BY {ordering}'
     )

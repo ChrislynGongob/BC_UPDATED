@@ -2092,6 +2092,10 @@ def update_address(user):
 
 # ------------------------------------------------------------------ staff --
 
+def _status_counts(rows):
+    return {row["status"]: row["c"] for row in rows}
+
+
 @app.route("/staff/dashboard")
 @login_required("staff")
 def staff_dashboard(user):
@@ -2120,7 +2124,11 @@ def staff_dashboard(user):
         urgent_complaints = conn.execute(
             "SELECT COUNT(*) c FROM complaints WHERE priority='High' AND status NOT IN ('Resolved','Closed','Rejected')"
         ).fetchone()["c"]
-        status_counts = dict(conn.execute("SELECT status, COUNT(*) c FROM complaints GROUP BY status").fetchall())
+        status_counts = _status_counts(
+            conn.execute(
+                "SELECT status, COUNT(*) c FROM complaints GROUP BY status"
+            ).fetchall()
+        )
         total_complaints = sum(status_counts.values())
         complaint_stats = [
             {
@@ -2488,7 +2496,11 @@ def admin_dashboard(user):
     urgent_complaints = conn.execute(
         "SELECT COUNT(*) c FROM complaints WHERE priority='High' AND status NOT IN ('Resolved','Closed','Rejected')"
     ).fetchone()["c"]
-    comp_status_counts = dict(conn.execute("SELECT status, COUNT(*) c FROM complaints GROUP BY status").fetchall())
+    comp_status_counts = _status_counts(
+        conn.execute(
+            "SELECT status, COUNT(*) c FROM complaints GROUP BY status"
+        ).fetchall()
+    )
     total_complaints_all = sum(comp_status_counts.values())
     complaint_stats = [
         {
@@ -2499,7 +2511,11 @@ def admin_dashboard(user):
         }
         for s in COMPLAINT_STATUSES
     ]
-    req_status_counts = dict(conn.execute("SELECT status, COUNT(*) c FROM requests GROUP BY status").fetchall())
+    req_status_counts = _status_counts(
+        conn.execute(
+            "SELECT status, COUNT(*) c FROM requests GROUP BY status"
+        ).fetchall()
+    )
     total_requests_all = sum(req_status_counts.values())
     request_stats = [
         {
@@ -3000,7 +3016,7 @@ def _report_where(user, table, filters, bounds):
             clauses.append("category=?")
             params.append(filters["category"])
         if user["role"] == "staff" and not can_handle_complaints(user):
-            clauses.append("0")
+            clauses.append("1=0")
     else:
         if filters["document_type"]:
             clauses.append("request_type=?")
@@ -3008,7 +3024,7 @@ def _report_where(user, table, filters, bounds):
         if user["role"] == "staff":
             allowed_types = handled_request_types(user)
             if not allowed_types:
-                clauses.append("0")
+                clauses.append("1=0")
             else:
                 clauses.append("request_type IN (" + ",".join("?" for _ in allowed_types) + ")")
                 params.extend(allowed_types)

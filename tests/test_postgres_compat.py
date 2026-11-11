@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 import psycopg
 
 import db as dbh
+import app as application
 from migrate_sqlite_to_postgres import inspect_source
 import seed
 
@@ -90,6 +91,16 @@ class PostgreSQLTranslationTests(unittest.TestCase):
         self.assertEqual(row[0], 7)
         self.assertEqual(row[1], "Resident")
         self.assertEqual(dict(row), {"id": 7, "name": "Resident"})
+
+    def test_dashboard_status_aggregation_reads_named_postgres_columns(self):
+        rows = [
+            dbh._CompatRow(("status", "c"), ("Pending", 3)),
+            dbh._CompatRow(("status", "c"), ("Resolved", 2)),
+        ]
+        counts = application._status_counts(rows)
+        self.assertEqual(counts, {"Pending": 3, "Resolved": 2})
+        self.assertEqual(sum(counts.values()), 5)
+        self.assertTrue(all(isinstance(count, int) for count in counts.values()))
 
     def test_postgres_connection_forces_ssl_and_rolls_back_on_close(self):
         connection = Mock()

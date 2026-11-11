@@ -3,6 +3,7 @@
 import mimetypes
 import os
 import threading
+from urllib import response
 from urllib.parse import quote
 
 import requests
@@ -145,9 +146,18 @@ def download(subdir, stored_name, upload_root=None):
     if response.status_code == 404:
         raise StorageNotFound("The stored file was not found.")
     if response.status_code != 200:
+        try:
+            error_body = response.json()
+        except ValueError:
+            error_body = {}
+        if isinstance(error_body, dict) and error_body.get("code") == "NoSuchKey": raise StorageNotFound("The stored file was not found.")
+
+
+    if response.status_code != 200:
         raise StorageError(
             f"Supabase Storage download failed (HTTP {response.status_code})."
-        )
+    )
+
     return response.content
 
 

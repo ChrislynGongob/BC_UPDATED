@@ -753,6 +753,41 @@ class AnalyticsReportTests(unittest.TestCase):
         self.assertIn('href="/admin/reports/document-requests"', selection_html)
         self.assertNotIn("Most Common Complaints", selection_html)
 
+    def test_report_access_scope_uses_boolean_false_predicates(self):
+        bounds = (date(2025, 1, 1), date(2025, 2, 1))
+        filters = {
+            "status": "Pending",
+            "category": "Noise Complaint",
+            "document_type": "Certificate of Residency",
+        }
+        cases = [
+            (
+                {"role": "staff", "office": "secretary"},
+                "complaints",
+                ["2025-01-01 00:00:00", "2025-02-01 00:00:00", "Pending",
+                 "Noise Complaint"],
+            ),
+            (
+                {"role": "staff", "office": "bpso"},
+                "requests",
+                ["2025-01-01 00:00:00", "2025-02-01 00:00:00", "Pending",
+                 "Certificate of Residency"],
+            ),
+        ]
+        conn = dbh.get_db()
+        try:
+            for user, table, expected_params in cases:
+                with self.subTest(table=table):
+                    where, params = A._report_where(user, table, filters, bounds)
+                    self.assertIn("AND 1=0", where)
+                    self.assertNotIn("AND 0", where)
+                    self.assertEqual(params, expected_params)
+                    self.assertEqual(
+                        A._report_count(conn, user, table, filters, bounds), 0
+                    )
+        finally:
+            conn.close()
+
     def test_staff_analytics_are_scoped_to_assigned_office(self):
         bpso = self.client_as(self.bpso_id, "staff")
         bpso_page = bpso.get("/reports")
@@ -761,6 +796,9 @@ class AnalyticsReportTests(unittest.TestCase):
         self.assertIn("Noise Complaint", bpso_html)
         self.assertNotIn("Barangay Clearance", bpso_html)
         self.assertNotIn("Most Requested Documents", bpso_html)
+        bpso_export = bpso.get("/reports/export?range=all&format=csv")
+        self.assertEqual(bpso_export.status_code, 200)
+        self.assertNotIn(b"Barangay Clearance", bpso_export.data)
 
         secretary = self.client_as(self.secretary_id, "staff")
         secretary_page = secretary.get("/reports")
@@ -770,6 +808,9 @@ class AnalyticsReportTests(unittest.TestCase):
         self.assertIn("Most Requested Documents", secretary_html)
         self.assertNotIn("Noise Complaint", secretary_html)
         self.assertNotIn("Most Common Complaints", secretary_html)
+        secretary_export = secretary.get("/reports/export?range=all&format=csv")
+        self.assertEqual(secretary_export.status_code, 200)
+        self.assertNotIn(b"Noise Complaint", secretary_export.data)
 
         unassigned = self.client_as(self.unassigned_id, "staff")
         self.assertEqual(unassigned.get("/reports").status_code, 403)

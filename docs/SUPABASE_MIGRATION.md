@@ -146,6 +146,79 @@ Supabase Storage access separately in staging before switching
 database file references; previously uploaded files in a failed multi-file
 request are cleaned up when possible, and cleanup failures are logged.
 
+## Local read-only staging verification
+
+`verify_supabase_staging_readonly.py` uses only `STAGING_DATABASE_URL`,
+`STAGING_SUPABASE_URL`, and `STAGING_SUPABASE_SERVICE_ROLE_KEY`. It forces a
+read-only PostgreSQL transaction, reports only the application table/row
+totals, then downloads each database-referenced object through the private
+Storage API in memory and compares the downloaded byte length with Storage's
+metadata. It does not write database records or files, and it refuses staging
+URLs that match the corresponding production variables.
+
+Set staging values only in the current PowerShell process. For secrets, use
+masked prompts; do not put real values in `.env`, source files, command
+arguments, or chat:
+
+```powershell
+function Set-SecretEnvironmentVariable($name) {
+    $secure = Read-Host $name -AsSecureString
+    $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        [Environment]::SetEnvironmentVariable(
+            $name,
+            [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer),
+            "Process"
+        )
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+        $secure.Dispose()
+    }
+}
+
+Set-SecretEnvironmentVariable "STAGING_DATABASE_URL"
+$env:STAGING_SUPABASE_URL = Read-Host "Staging project URL"
+Set-SecretEnvironmentVariable "STAGING_SUPABASE_SERVICE_ROLE_KEY"
+.\venv\Scripts\python.exe .\verify_supabase_staging_readonly.py
+```
+
+The staging database URL must be a TLS Session Pooler URL (port 5432). The
+service-role key is used only server-side for private bucket metadata and object
+GET requests. Set `STAGING_SUPABASE_STORAGE_BUCKET_REQUESTS`,
+`STAGING_SUPABASE_STORAGE_BUCKET_COMPLAINTS`, and
+`STAGING_SUPABASE_STORAGE_BUCKET_PROFILES` in the same process only if the
+staging bucket names differ from the documented defaults.
+
+After the read-only verification succeeds, the app can be launched locally
+against staging in that PowerShell process:
+
+```powershell
+$env:APP_ENV = "development"
+$env:DB_BACKEND = "postgres"
+$env:DATABASE_URL = $env:STAGING_DATABASE_URL
+$env:STORAGE_BACKEND = "supabase"
+$env:SUPABASE_URL = $env:STAGING_SUPABASE_URL
+$env:SUPABASE_SERVICE_ROLE_KEY = $env:STAGING_SUPABASE_SERVICE_ROLE_KEY
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$randomBytes = New-Object byte[] 48
+$rng.GetBytes($randomBytes)
+$env:SECRET_KEY = [Convert]::ToBase64String($randomBytes)
+$rng.Dispose()
+$env:FLASK_DEBUG = "0"
+.\venv\Scripts\python.exe .\app.py
+```
+
+Flask binds to `127.0.0.1:5000`; do not expose this service publicly. The app
+supports writes, so avoid submitting requests/complaints or uploading files
+until you explicitly intend to add staging records/objects. Use a dedicated
+staging account for authentication checks; failed login attempts can update
+login-lockout state. Clear the staging credentials and secrets when finished:
+
+```powershell
+Remove-Item Env:\STAGING_DATABASE_URL, Env:\STAGING_SUPABASE_URL, Env:\STAGING_SUPABASE_SERVICE_ROLE_KEY, Env:\STAGING_SUPABASE_STORAGE_BUCKET_REQUESTS, Env:\STAGING_SUPABASE_STORAGE_BUCKET_COMPLAINTS, Env:\STAGING_SUPABASE_STORAGE_BUCKET_PROFILES, Env:\DATABASE_URL, Env:\SUPABASE_URL, Env:\SUPABASE_SERVICE_ROLE_KEY, Env:\SUPABASE_STORAGE_BUCKET_REQUESTS, Env:\SUPABASE_STORAGE_BUCKET_COMPLAINTS, Env:\SUPABASE_STORAGE_BUCKET_PROFILES, Env:\SECRET_KEY, Env:\APP_ENV, Env:\DB_BACKEND, Env:\STORAGE_BACKEND, Env:\FLASK_DEBUG -ErrorAction SilentlyContinue
+```
+
 For Render, the included `render.yaml` uses only:
 
 ```text
