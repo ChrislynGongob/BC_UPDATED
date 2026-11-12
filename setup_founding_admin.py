@@ -15,7 +15,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import db as dbh
 
 
-FOUNDING_ADMIN_EMAIL = "ralphpatrickga@gmail.com"
+FOUNDING_ADMIN_EMAIL = "chrislyngongob143@gmail.com"
 
 
 def setup_founding_admin():
