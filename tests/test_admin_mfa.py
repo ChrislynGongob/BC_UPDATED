@@ -28,7 +28,7 @@ class AdminMFATests(unittest.TestCase):
         dbh.init_db()
         self.conn_execute(
             "INSERT INTO users(full_name,email,password_hash,role,is_super_admin,is_founding_admin) VALUES (?,?,?,'admin',1,1)",
-            ("Founding Admin", "admin@example.test", generate_password_hash("Admin@1234")),
+            ("Ralph Patrick Ga", "ralphpatrickga@gmail.com", generate_password_hash("Admin@1234")),
         )
         self.client = A.app.test_client()
         email = patch.object(A.email_service, "send_email")
@@ -46,7 +46,7 @@ class AdminMFATests(unittest.TestCase):
             conn.close()
 
     def login(self, client=None):
-        return (client or self.client).post("/login", data={"email": "admin@example.test", "password": "Admin@1234"})
+        return (client or self.client).post("/login", data={"email": "ralphpatrickga@gmail.com", "password": "Admin@1234"})
 
     def code(self):
         return re.search(r"code is (\d{6})", self.send.call_args.args[2]).group(1)
@@ -71,7 +71,7 @@ class AdminMFATests(unittest.TestCase):
     def test_success_hashed_single_use_and_founding_privileges(self):
         self.assertEqual(self.login().location, "/verify-otp")
         code = self.code()
-        self.assertEqual(self.send.call_args.args[0], "admin@example.test")
+        self.assertEqual(self.send.call_args.args[0], "ralphpatrickga@gmail.com")
         row = self.challenge()
         self.assertNotIn(code, row["email_otp_hash"])
         self.assertEqual(len(row["email_otp_hash"]), 64)

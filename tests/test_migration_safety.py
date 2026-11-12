@@ -12,6 +12,20 @@ import migrate_uploads_to_supabase as storage_migration
 
 
 class StorageMigrationSafetyTests(unittest.TestCase):
+    def test_admin_hierarchy_migration_does_not_guess_or_modify_founder_account(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        migration_path = os.path.join(
+            root, "postgres_migrations", "001_admin_hierarchy.sql"
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read().lower()
+
+        self.assertIn("add column if not exists is_founding_admin", migration)
+        self.assertIn("create unique index idx_users_single_founding_admin", migration)
+        self.assertNotIn("update users", migration)
+        self.assertNotIn("password_hash", migration)
+        self.assertNotRegex(migration, r"\bwhere\s+id\s*=\s*17\b")
+
     def test_production_confirmation_flag_runs_production_transfer(self):
         with patch.object(
             storage_migration,

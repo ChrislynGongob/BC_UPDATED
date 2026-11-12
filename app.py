@@ -9,12 +9,13 @@ import math
 import mimetypes
 import secrets
 import threading
+import time
 from functools import wraps
 from datetime import datetime, timedelta, timezone
 import random
 
 from flask import (
-    Flask, render_template, request, redirect, url_for, session, flash,
+    Flask, render_template, request, redirect, url_for, session, flash, g,
     jsonify, send_file, abort
 )
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -177,9 +178,18 @@ if not _secret_key and (
 ):
     raise RuntimeError("SECRET_KEY must be configured before production startup.")
 app.secret_key = _secret_key or "dev-secret-key-change-in-production"
+app.config["REQUEST_TIMING_LOGGING"] = os.environ.get(
+    "REQUEST_TIMING_LOGGING", "true"
+).strip().lower() not in {"0", "false", "no", "off"}
 _start_admin_mfa, _admin_reset_mfa_valid = register_admin_mfa(app, dbh, email_service)
 _db_ready = False
 _db_startup_lock = threading.Lock()
+
+
+@app.before_request
+def _start_request_timer():
+    if app.config["REQUEST_TIMING_LOGGING"]:
+        g._request_started_at = time.perf_counter()
 
 
 @app.before_request
@@ -223,6 +233,22 @@ def _protect_password_reset_response(response):
     }:
         response.headers["Cache-Control"] = "no-store"
         response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+@app.after_request
+def _log_request_duration(response):
+    started_at = getattr(g, "_request_started_at", None)
+    if started_at is not None:
+        route = request.url_rule.rule if request.url_rule else "<unmatched>"
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        app.logger.info(
+            "request_timing method=%s route=%s status=%s elapsed_ms=%.2f",
+            request.method,
+            route,
+            response.status_code,
+            elapsed_ms,
+        )
     return response
 
 
@@ -2632,6 +2658,12 @@ def update_account_mobile(user, account_id):
     if user["role"] == "staff" and account["role"] != "resident":
         conn.close()
         abort(403)
+    if account["role"] == "admin" and not (
+        user["email"].strip().lower() == FOUNDING_ADMIN_EMAIL
+        and int(user["is_super_admin"] or 0) == 1
+    ):
+        conn.close()
+        abort(403)
     return_endpoint = {
         "resident": "admin_residents",
         "staff": "admin_staff",
@@ -2736,11 +2768,16 @@ def reset_staff_password(user, staff_id):
 @app.route("/admin/administrators", methods=["GET", "POST"])
 @login_required("admin")
 def admin_administrators(user):
+    # Supabase's deployed users table has the legacy integer flag but no
+    # is_founding_admin column. Pin the sole elevated designation to Ralph.
+    is_founder = (
+        user["email"].strip().lower() == FOUNDING_ADMIN_EMAIL
+        and int(user["is_super_admin"] or 0) == 1
+    )
+    if not is_founder:
+        abort(403)
     conn = dbh.get_db()
     if request.method == "POST":
-        if not (user["is_super_admin"] or user["is_founding_admin"]):
-            conn.close()
-            abort(403)
         full_name = request.form.get("full_name", "").strip()
         email = request.form.get("email", "").strip().lower()
         recovery_email = request.form.get("recovery_email", "").strip().lower()
@@ -2759,8 +2796,7 @@ def admin_administrators(user):
         else:
             conn.execute(
                 "INSERT INTO users (full_name, email, recovery_email, password_hash, role, "
-                "is_super_admin, is_founding_admin, contact_number, created_by) "
-                "VALUES (?,?,?,?,?,0,0,?,?)",
+                "contact_number, created_by) VALUES (?,?,?,?,?,?,?)",
                 (
                     full_name,
                     email,
@@ -2778,114 +2814,14 @@ def admin_administrators(user):
         return redirect(url_for("admin_administrators"))
 
     rows = conn.execute(
-        "SELECT id, full_name, email, role, is_super_admin, is_founding_admin, created_at, contact_number "
+        "SELECT id, full_name, email, role, is_super_admin, created_at, contact_number "
         "FROM users WHERE role='admin' ORDER BY created_at ASC"
     ).fetchall()
     conn.close()
-    is_founder = bool(user["is_founding_admin"])
     return render_template(
         "admin/administrators.html", rows=rows,
-        can_manage_admins=bool(user["is_super_admin"] or is_founder),
-        is_founder=is_founder,
-        founder_transfer_csrf=(session.setdefault("founder_transfer_csrf", secrets.token_urlsafe(32))
-                               if is_founder else ""),
+        can_manage_admins=True,
     )
-
-
-@app.route("/admin/administrators/transfer-founding-admin", methods=["POST"])
-@login_required("admin")
-def transfer_founding_admin(user):
-    if not user["is_founding_admin"]:
-        abort(403)
-    expected_csrf = session.get("founder_transfer_csrf", "")
-    supplied_csrf = request.form.get("csrf_token", "")
-    if not expected_csrf or not hmac.compare_digest(expected_csrf, supplied_csrf):
-        abort(400)
-    verified_at = session.get("admin_mfa_verified_at")
-    mfa_proof = session.get("admin_mfa_proof", "")
-    try:
-        verified_at = datetime.fromisoformat(verified_at)
-    except (TypeError, ValueError):
-        abort(403)
-    if verified_at.tzinfo:
-        verified_at = verified_at.replace(tzinfo=None)
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    if verified_at > now or now - verified_at > timedelta(minutes=10):
-        abort(403)
-
-    target_email = request.form.get("email", "").strip().lower()
-    confirmation = request.form.get("confirmation", "").strip()
-    if (not valid_email(target_email) or target_email != FOUNDING_ADMIN_EMAIL
-            or confirmation.lower() != target_email):
-        flash(f"Enter {FOUNDING_ADMIN_EMAIL} and repeat it to confirm.", "error")
-        return redirect(url_for("admin_administrators"))
-
-    conn = dbh.get_db()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        founder = conn.execute(
-            "SELECT * FROM users WHERE id=? AND role='admin' "
-            "AND is_founding_admin=1 AND is_super_admin=1 AND status='active'",
-            (user["id"],),
-        ).fetchone()
-        expected_proof = hmac.new(
-            app.secret_key.encode(),
-            f"admin-credentials:{user['id']}:{founder['password_hash']}:{founder['email']}".encode(),
-            hashlib.sha256,
-        ).hexdigest() if founder else ""
-        if not founder or not hmac.compare_digest(mfa_proof, expected_proof):
-            conn.rollback()
-            abort(403)
-        target = conn.execute(
-            "SELECT * FROM users WHERE lower(email)=?", (target_email,)
-        ).fetchone()
-        if (not target or target["id"] == founder["id"] or target["role"] != "admin"
-                or target["status"] != "active" or target["is_founding_admin"]
-                or target["is_super_admin"]):
-            conn.rollback()
-            flash("The replacement must be an active regular Admin account.", "error")
-            return redirect(url_for("admin_administrators"))
-        challenge = conn.execute(
-            "SELECT used_at FROM admin_otp_challenges WHERE user_id=?",
-            (target["id"],),
-        ).fetchone()
-        try:
-            target_mfa_at = datetime.fromisoformat(challenge["used_at"]) if challenge and challenge["used_at"] else None
-        except ValueError:
-            target_mfa_at = None
-        if (not target_mfa_at or target_mfa_at > now
-                or now - target_mfa_at > timedelta(hours=24)):
-            conn.rollback()
-            flash("The replacement must complete email OTP login within the last 24 hours.", "error")
-            return redirect(url_for("admin_administrators"))
-
-        old_updated = conn.execute(
-            "UPDATE users SET is_founding_admin=0 WHERE id=? AND is_founding_admin=1 "
-            "AND is_super_admin=1 AND status='active'",
-            (founder["id"],),
-        )
-        new_updated = conn.execute(
-            "UPDATE users SET is_founding_admin=1, is_super_admin=1 "
-            "WHERE id=? AND role='admin' AND status='active' "
-            "AND is_founding_admin=0 AND is_super_admin=0",
-            (target["id"],),
-        )
-        if old_updated.rowcount != 1 or new_updated.rowcount != 1:
-            conn.rollback()
-            abort(409)
-        dbh.log_action(
-            conn, founder, "Transferred Founding Admin ownership",
-            target=target["email"], details=f"previous_founder_id={founder['id']}; new_founder_id={target['id']}",
-        )
-        conn.commit()
-        session.pop("admin_mfa_verified_at", None)
-        session.pop("admin_mfa_proof", None)
-        flash("Founding Admin ownership transferred. Both accounts remain active.", "success")
-    finally:
-        if conn.in_transaction:
-            conn.rollback()
-        conn.close()
-    return redirect(url_for("admin_administrators"))
 
 
 @app.route("/admin/requests")

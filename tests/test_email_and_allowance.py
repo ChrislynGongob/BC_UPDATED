@@ -34,7 +34,7 @@ class SecurityAndAllowanceTests(unittest.TestCase):
         conn.execute(
             "INSERT INTO users (full_name,email,password_hash,role,is_super_admin,contact_number) "
             "VALUES (?,?,?,?,1,?)",
-            ("Test Admin", "test-admin@example.test", generate_password_hash("Admin@1234"), "admin", "+639171000001"),
+            ("Ralph Patrick Ga", "ralphpatrickga@gmail.com", generate_password_hash("Admin@1234"), "admin", "+639171000001"),
         )
         conn.commit()
         conn.close()
@@ -802,7 +802,7 @@ class SecurityAndAllowanceTests(unittest.TestCase):
             self.assertEqual(client.get("/admin/dashboard").location, "/login")
 
     def test_founding_admin_requires_otp_then_initial_password_change(self):
-        email = "test-admin@example.test"
+        email = "ralphpatrickga@gmail.com"
         conn = dbh.get_db()
         conn.execute(
             "UPDATE users SET must_reset_pw=1, recovery_email=? WHERE id=1",

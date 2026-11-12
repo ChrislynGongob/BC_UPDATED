@@ -5,7 +5,7 @@
 {% if can_manage_admins %}
 <div class="card" style="max-width:640px;">
   <h3>Create Administrator Account</h3>
-  <p class="muted">You may create regular Administrator accounts. New accounts do not receive Super Admin or Founding Admin privileges.</p>
+  <p class="muted">You may create regular Administrator accounts. New accounts do not receive Founding Administrator privileges.</p>
   <form method="POST" class="form-grid">
     <div class="form-row two">
       <div class="form-row"><label>Full name</label><input type="text" name="full_name" required></div>
@@ -29,19 +29,6 @@
 </div>
 {% endif %}
 
-{% if is_founder %}
-<div class="card" style="max-width:640px;">
-  <h3>Transfer Founding Admin ownership</h3>
-  <p class="muted">The replacement must already be an active regular Administrator and must have completed email OTP login within the last 24 hours. Your Founding Admin session must have completed MFA within the last 10 minutes. Both accounts remain active.</p>
-  <form method="POST" action="{{ url_for('transfer_founding_admin') }}" class="form-grid">
-    <input type="hidden" name="csrf_token" value="{{ founder_transfer_csrf }}">
-    <div class="form-row"><label>Replacement Admin email</label><input type="email" name="email" value="ralphpatrick@gmail.com" readonly required></div>
-    <div class="form-row"><label>Type the same email to confirm</label><input type="email" name="confirmation" required></div>
-    <button class="btn btn-primary" type="submit">Transfer Founding Admin ownership</button>
-  </form>
-</div>
-{% endif %}
-
 <div class="card">
   <h3>Administrator Accounts</h3>
   <div class="table-wrap"><table>
@@ -55,7 +42,7 @@
           <button class="btn btn-outline btn-sm" type="submit">Save</button>
         </form>
       </td>
-      <td>{% if u.is_founding_admin %}<span class="badge badge-Approved">Founding Admin</span>{% elif u.is_super_admin %}<span class="badge">Super Admin</span>{% else %}<span class="tag">Administrator</span>{% endif %}</td>
+      <td>{% if u.email|lower == 'ralphpatrickga@gmail.com' and u.is_super_admin|int == 1 %}<span class="badge badge-Approved">Founding Administrator</span>{% else %}<span class="tag">Administrator</span>{% endif %}</td>
       <td class="muted">{{ u.created_at }}</td>
     </tr>
     {% endfor %}

@@ -260,7 +260,7 @@ python3 app.py
 
 Open **http://127.0.0.1:5000** in your browser.
 
-The designated Founding Admin login and recovery email is `ralphpatrick@gmail.com`.
+The designated Founding Admin login and recovery email is `ralphpatrickga@gmail.com`.
 `init_founding_admin.py` hashes the administrator-supplied initial password
 and requires a change after first sign-in. Admin password recovery is sent to
 the stored recovery email.
@@ -268,8 +268,11 @@ the stored recovery email.
 For one-time, create-only initialization, run `python init_founding_admin.py`
 with `FOUNDING_ADMIN_NAME` and `FOUNDING_ADMIN_PASSWORD` set. It creates the
 Founding Admin only when no administrator exists; otherwise it makes no account
-changes. Never use `setup_founding_admin.py` as a recurring deploy command. Both initializer
-scripts now refuse to overwrite an existing administrator's password.
+changes. On an existing database that already has administrators but no
+Founding Admin, apply the PostgreSQL hierarchy migration first, then run
+`setup_founding_admin.py` once with those variables set. It creates only the
+designated account and refuses to change an existing account or password.
+Neither script is a recurring deploy command.
 
 Render Free does not persist local SQLite or upload files across redeploys. The
 included `render.yaml` starts only Gunicorn; it does not run schema creation,
@@ -296,7 +299,7 @@ log in as an Admin and go to Settings — no code editing needed.
 | Resident | pedro.resident@example.com         | `DEMO_RESIDENT_PASSWORD` | |
 
 The demo passwords are supplied as environment variables and are not printed.
-The designated Founding Admin is `ralphpatrick@gmail.com`; configure its initial password
+The designated Founding Admin is `ralphpatrickga@gmail.com`; configure its initial password
 with `FOUNDING_ADMIN_PASSWORD` and change it after first login.
 
 
@@ -311,40 +314,15 @@ Super Admins can create regular Admin accounts, and regular Admins cannot create
 accounts or change elevated roles. The application does not transfer ownership
 on deployment or during account setup.
 
-For the current Supabase PostgreSQL deployment:
+For PostgreSQL, schema migration and account provisioning are separate steps:
 
-1. Schedule a maintenance window and take a recoverable Supabase database
-   backup. Confirm Ralph's account is the active Super Admin with ID 17.
-2. In the Supabase SQL editor, review and run
-   `postgres_migrations/001_admin_hierarchy.sql` as one transaction. It adds
-   `is_founding_admin`, marks only account 17 as Founding Admin, retains his
-   Super Admin flag and active status, and replaces the old singleton-Super-Admin
-   index with a single-Founder index. It aborts if account 17 does not match the
-   expected active Super Admin state or if a Founder is already designated.
-3. Deploy the application code to Render. Do not add the migration to the
-   Render start command. The app checks that the PostgreSQL schema exists and
-   does not apply PostgreSQL migrations automatically.
-4. Sign in as the current Founder and open **Administrators**. Create one regular
-   Admin account for `ralphpatrick@gmail.com`, using that address as the login
-   email and a verified, accessible recovery email. If the email already belongs
-   to any account, stop and resolve it without creating a duplicate.
-5. Have the replacement sign in and complete email OTP MFA. Verify they can
-   access the app and that their account is still a regular Admin. Do not transfer
-   until this test succeeds.
-6. Within 24 hours of the replacement's successful OTP login, the current Founder
-   must complete their own MFA login and, within 10 minutes, submit the Founding
-   Admin transfer form. Confirm the replacement email exactly. The transaction
-   promotes the replacement to Founder and Super Admin, leaves Ralph active as a
-   Super Admin, preserves both password hashes and account records, and writes an
-   audit event.
-7. Verify the Administrators page shows one Founding Admin, the replacement can
-   sign in with OTP, and Ralph remains active with Super Admin status. Retain the
-   pre-transfer backup through this verification.
+1. Schedule a maintenance window and take a recoverable database backup.
+2. Review and run `postgres_migrations/001_admin_hierarchy.sql` manually as the database owner. It adds the Founder flag and a unique partial index, preserves existing role flags, and does not select or modify any account. It stops if existing Founder records are inconsistent.
+3. Deploy the application code to Render. Do not run schema migration from the Render start command; PostgreSQL migrations remain manual.
+4. If the database has no Founder, set `DB_BACKEND=postgres`, `DATABASE_URL`, `FOUNDING_ADMIN_NAME`, and `FOUNDING_ADMIN_PASSWORD` in a protected, short-lived environment. Run `python setup_founding_admin.py` once. It provisions `ralphpatrickga@gmail.com` as active Founder and Super Admin, hashes the supplied password, requires a password change after OTP login, and refuses to modify an existing account or proceed if another Founder exists.
+5. Have the new Founder complete OTP login and the required password change. Confirm exactly one active Founder, then remove the temporary password variable from the environment.
 
-To roll back before ownership transfer, restore the backup or roll back the
-application and schema deployment while Ralph remains Founder. After transfer,
-do not edit role flags manually; use a separately reviewed, authorized transfer
-transaction or restore the pre-transfer snapshot if a full rollback is required.
+If a Founder already exists, do not run the setup script to replace them. Use the authorized Founding Admin transfer flow. No account transfer is performed by the schema migration or application deployment.
 
 ## Running the tests
 

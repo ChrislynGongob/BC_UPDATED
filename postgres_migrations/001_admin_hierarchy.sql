@@ -1,7 +1,6 @@
--- BRGYCONNECT Administrator Hierarchy, legacy PostgreSQL -> hierarchy schema.
+-- Add the Founding Admin marker without guessing which existing account owns it.
 -- Review and run manually as a database owner during a maintenance window.
--- This assigns Founding Admin to Ralph (ID 17) only; it does not alter his
--- Super Admin flag, status, credentials, or any related account records.
+-- Provision the designated Founder separately with setup_founding_admin.py.
 BEGIN;
 
 ALTER TABLE users
@@ -9,41 +8,32 @@ ALTER TABLE users
 
 DO $$
 DECLARE
-    target_count INTEGER;
-    current_founders INTEGER;
+    founder_count INTEGER;
+    valid_founder_count INTEGER;
 BEGIN
-    SELECT COUNT(*) INTO target_count
-      FROM users
-     WHERE id = 17 AND role = 'admin' AND is_super_admin = 1 AND status = 'active';
-    IF target_count <> 1 THEN
-        RAISE EXCEPTION 'Expected active Super Admin account ID 17; migration stopped without transfer';
-    END IF;
-
-    SELECT COUNT(*) INTO current_founders
+    SELECT COUNT(*) INTO founder_count
       FROM users
      WHERE role = 'admin' AND is_founding_admin = 1;
-    IF current_founders > 0 THEN
-        RAISE EXCEPTION 'Founding Admin already designated; inspect current data before migration';
+    IF founder_count > 1 THEN
+        RAISE EXCEPTION 'Multiple Founding Admin accounts exist; migration stopped';
     END IF;
 
-    UPDATE users SET is_founding_admin = 1 WHERE id = 17;
+    IF founder_count = 1 THEN
+        SELECT COUNT(*) INTO valid_founder_count
+          FROM users
+         WHERE role = 'admin'
+           AND is_founding_admin = 1
+           AND is_super_admin = 1
+           AND status = 'active';
+        IF valid_founder_count <> 1 THEN
+            RAISE EXCEPTION 'Existing Founding Admin is not an active Super Admin';
+        END IF;
+    END IF;
 END $$;
 
--- Remove the legacy index that incorrectly made Super Admin a singleton.
 DROP INDEX IF EXISTS idx_users_single_founding_admin;
 CREATE UNIQUE INDEX idx_users_single_founding_admin
     ON users(is_founding_admin)
     WHERE role = 'admin' AND is_founding_admin = 1;
-
-DO $$
-DECLARE
-    founder_count INTEGER;
-BEGIN
-    SELECT COUNT(*) INTO founder_count
-      FROM users WHERE role = 'admin' AND is_founding_admin = 1;
-    IF founder_count <> 1 THEN
-        RAISE EXCEPTION 'Expected exactly one Founding Admin after migration';
-    END IF;
-END $$;
 
 COMMIT;
