@@ -5,4 +5,4 @@ reportlab==4.4.10
 requests==2.33.1
 gunicorn>=23,<24
 python-dotenv
-psycopg[binary]>=3.2,<4
+psycopg[binary,pool]>=3.2,<4

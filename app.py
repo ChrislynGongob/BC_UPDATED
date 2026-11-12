@@ -16,7 +16,8 @@ import random
 
 from flask import (
     Flask, render_template, request, redirect, url_for, session, flash, g,
-    jsonify, send_file, abort
+    jsonify, send_file, abort, has_request_context, before_render_template,
+    template_rendered,
 )
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -242,25 +243,49 @@ def _log_request_duration(response):
     if started_at is not None:
         route = request.url_rule.rule if request.url_rule else "<unmatched>"
         elapsed_ms = (time.perf_counter() - started_at) * 1000
+        db_stats = getattr(g, "_db_timing", {})
         app.logger.info(
-            "request_timing method=%s route=%s status=%s elapsed_ms=%.2f",
-            request.method,
-            route,
-            response.status_code,
-            elapsed_ms,
+            "request_timing method=%s route=%s status=%s elapsed_ms=%.2f "
+            "db_queries=%s db_query_ms=%.2f db_pool_wait_ms=%.2f template_ms=%.2f",
+            request.method, route, response.status_code, elapsed_ms,
+            db_stats.get("queries", 0), db_stats.get("query_ms", 0.0),
+            db_stats.get("pool_wait_ms", 0.0), getattr(g, "_template_ms", 0.0),
         )
     return response
+
+
+def _start_template_timer(sender, template, context, **extra):
+    if has_request_context():
+        g._template_started_at = time.perf_counter()
+
+
+def _finish_template_timer(sender, template, context, **extra):
+    started = getattr(g, "_template_started_at", None) if has_request_context() else None
+    if started is not None:
+        g._template_ms = (
+            getattr(g, "_template_ms", 0.0)
+            + (time.perf_counter() - started) * 1000
+        )
+
+
+before_render_template.connect(_start_template_timer, app, weak=False)
+template_rendered.connect(_finish_template_timer, app, weak=False)
 
 
 # ---------------------------------------------------------------- helpers --
 
 def current_user():
+    if getattr(g, "_current_user_loaded", False):
+        return g._current_user
+    g._current_user_loaded = True
     if "user_id" not in session:
-        return None
+        g._current_user = None
+        return g._current_user
     conn = dbh.get_db()
     row = conn.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
     conn.close()
-    return row
+    g._current_user = row
+    return g._current_user
 
 
 def configured_minutes(name, default, minimum=1):
@@ -559,17 +584,13 @@ def resident_duplicate_request(conn, resident_id, request_type, purpose):
 
 def community_issue_rows(conn, user_id, include_single=False):
     issues = conn.execute(
-        "SELECT ci.*, COUNT(c.id) complaint_count, COUNT(DISTINCT c.resident_id) distinct_residents "
+        "SELECT ci.*, COUNT(c.id) complaint_count, COUNT(DISTINCT c.resident_id) distinct_residents, "
+        "EXISTS(SELECT 1 FROM community_issue_follows f "
+        "WHERE f.community_issue_id=ci.id AND f.user_id=?) is_following "
         "FROM community_issues ci JOIN complaints c ON c.community_issue_id=ci.id "
-        "GROUP BY ci.id ORDER BY ci.updated_at DESC, ci.id DESC"
+        "GROUP BY ci.id ORDER BY ci.updated_at DESC, ci.id DESC",
+        (user_id,),
     ).fetchall()
-    follows = {
-        row["community_issue_id"]
-        for row in conn.execute(
-            "SELECT community_issue_id FROM community_issue_follows WHERE user_id=?",
-            (user_id,),
-        ).fetchall()
-    }
     grouped = []
     for issue in issues:
         if not include_single and issue["distinct_residents"] < 2:
@@ -585,7 +606,7 @@ def community_issue_rows(conn, user_id, include_single=False):
             "complaint_count": issue["complaint_count"],
             "distinct_residents": issue["distinct_residents"],
             "summary": f"Residents reported {issue['category']} in {issue['location'] or 'an unspecified location'}.",
-            "is_following": issue["id"] in follows,
+            "is_following": issue["is_following"],
         })
     return grouped
 
@@ -762,12 +783,6 @@ def format_file_size(size):
     return f"{size} B"
 
 
-def notif_count(conn, user_id):
-    return conn.execute(
-        "SELECT COUNT(*) c FROM notifications WHERE user_id=? AND is_read=0", (user_id,)
-    ).fetchone()["c"]
-
-
 @app.context_processor
 def inject_globals():
     user = current_user()
@@ -777,7 +792,10 @@ def inject_globals():
     daily_concerns_remaining = 0
     if user:
         conn = dbh.get_db()
-        unread = notif_count(conn, user["id"])
+        count_expressions = [
+            "(SELECT COUNT(*) FROM notifications WHERE user_id=? AND is_read=0) unread_count"
+        ]
+        count_params = [user["id"]]
         if user["role"] == "resident":
             allowance, _ = concern_allowance(conn, user["id"])
             daily_concerns_remaining = allowance["remaining"]
@@ -785,14 +803,23 @@ def inject_globals():
         types = handled_request_types(user)
         if types:
             clause, params = _in_clause(types)
-            new_requests = conn.execute(
-                f"SELECT COUNT(*) c FROM requests WHERE status='Submitted' AND request_type {clause}",
-                params,
-            ).fetchone()["c"]
+            count_expressions.append(
+                f"(SELECT COUNT(*) FROM requests WHERE status='Submitted' AND request_type {clause}) new_requests"
+            )
+            count_params.extend(params)
         if can_handle_complaints(user):
-            new_complaints = conn.execute(
-                "SELECT COUNT(*) c FROM complaints WHERE status='Pending'"
-            ).fetchone()["c"]
+            count_expressions.append(
+                "(SELECT COUNT(*) FROM complaints WHERE status='Pending') new_complaints"
+            )
+        nav_counts = conn.execute("SELECT " + ", ".join(count_expressions), count_params).fetchone()
+        unread = nav_counts["unread_count"]
+        nav_columns = nav_counts.keys()
+        new_requests = (
+            nav_counts["new_requests"] if "new_requests" in nav_columns else 0
+        )
+        new_complaints = (
+            nav_counts["new_complaints"] if "new_complaints" in nav_columns else 0
+        )
         conn.close()
     return dict(
         current_user=user, unread_count=unread, now=datetime.now(),
@@ -2514,12 +2541,16 @@ def _build_trend_chart(conn, weeks=8):
 def admin_dashboard(user):
     conn = dbh.get_db()
     total_residents = conn.execute("SELECT COUNT(*) c FROM users WHERE role='resident'").fetchone()["c"]
-    active_staff = conn.execute("SELECT COUNT(*) c FROM users WHERE role='staff' AND status='active'").fetchone()["c"]
+    staff_office_counts = {
+        row["office"]: row["c"]
+        for row in conn.execute(
+            "SELECT office, COUNT(*) c FROM users WHERE role='staff' AND status='active' GROUP BY office"
+        ).fetchall()
+    }
+    active_staff = sum(staff_office_counts.values())
     uncovered_offices = [
         cfg["label"] for key, cfg in OFFICES.items()
-        if not conn.execute(
-            "SELECT 1 FROM users WHERE role='staff' AND status='active' AND office=?", (key,)
-        ).fetchone()
+        if not staff_office_counts.get(key, 0)
     ]
     pending_requests = conn.execute(
         "SELECT COUNT(*) c FROM requests WHERE status NOT IN ('Completed','Rejected')"

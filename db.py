@@ -1,3 +1,4 @@
+import atexit
 import sqlite3
 import os
 import re
@@ -5,6 +6,8 @@ import random
 import string
 import shutil
 import subprocess
+import threading
+import time
 from datetime import datetime, timedelta
 from urllib.parse import unquote, urlsplit
 
@@ -13,6 +16,11 @@ DB_PATH = os.path.join(BASE_DIR, "instance", "barangayconnect.db")
 SCHEMA_PATH = os.path.join(BASE_DIR, "schema.sql")
 BACKUP_KEEP = 14                 # newest N backups are kept, older ones are deleted
 AUTO_BACKUP_EVERY_HOURS = 24
+POSTGRES_POOL_MIN_SIZE = 0
+POSTGRES_POOL_MAX_SIZE = 4
+POSTGRES_POOL_TIMEOUT_SECONDS = 10
+_postgres_pool = None
+_postgres_pool_lock = threading.Lock()
 _BACKUP_RE = re.compile(
     r"^barangayconnect-\d{4}-\d{2}-\d{2}_\d{6}(-\d+)?\.(?:db|dump)$"
 )
@@ -202,8 +210,10 @@ class _PostgresCursor:
 
 
 class _PostgresConnection:
-    def __init__(self, connection):
+    def __init__(self, connection, pool):
         self._connection = connection
+        self._pool = pool
+        self._returned = False
 
     def execute(self, sql, params=()):
         match = re.match(
@@ -212,12 +222,20 @@ class _PostgresConnection:
             flags=re.IGNORECASE,
         )
         cursor = self._connection.cursor()
-        cursor.execute(_postgres_sql(sql), params)
+        started = time.perf_counter()
+        try:
+            cursor.execute(_postgres_sql(sql), params)
+        finally:
+            _record_request_db_time((time.perf_counter() - started) * 1000)
         return _PostgresCursor(self, cursor, match.group(1) if match else None)
 
     def executemany(self, sql, params):
         cursor = self._connection.cursor()
-        cursor.executemany(_postgres_sql(sql), params)
+        started = time.perf_counter()
+        try:
+            cursor.executemany(_postgres_sql(sql), params)
+        finally:
+            _record_request_db_time((time.perf_counter() - started) * 1000)
         return _PostgresCursor(self, cursor)
 
     @property
@@ -233,11 +251,64 @@ class _PostgresConnection:
         self._connection.rollback()
 
     def close(self):
+        if self._returned:
+            return
+        self._returned = True
         try:
             if self.in_transaction:
                 self.rollback()
         finally:
-            self._connection.close()
+            self._pool.putconn(self._connection)
+
+
+def _record_request_db_time(query_ms=0, pool_wait_ms=0):
+    """Record aggregate timings only; never retain SQL or bound parameters."""
+    try:
+        from flask import g, has_request_context
+
+        if has_request_context():
+            stats = getattr(g, "_db_timing", None)
+            if stats is None:
+                stats = g._db_timing = {"queries": 0, "query_ms": 0.0, "pool_wait_ms": 0.0}
+            if query_ms:
+                stats["queries"] += 1
+                stats["query_ms"] += query_ms
+            if pool_wait_ms:
+                stats["pool_wait_ms"] += pool_wait_ms
+    except (ImportError, RuntimeError):
+        pass
+
+
+def _get_postgres_pool(database_url):
+    global _postgres_pool
+    with _postgres_pool_lock:
+        if _postgres_pool is None:
+            from psycopg.conninfo import make_conninfo
+            from psycopg_pool import ConnectionPool
+
+            _postgres_pool = ConnectionPool(
+                conninfo=make_conninfo(database_url, sslmode="require"),
+                min_size=POSTGRES_POOL_MIN_SIZE,
+                max_size=POSTGRES_POOL_MAX_SIZE,
+                timeout=POSTGRES_POOL_TIMEOUT_SECONDS,
+                kwargs={"row_factory": _postgres_row_factory},
+                open=False,
+                name="brgyconnect-postgres",
+            )
+            _postgres_pool.open(wait=False)
+        return _postgres_pool
+
+
+def close_postgres_pool():
+    """Close this worker's pool during orderly process shutdown."""
+    global _postgres_pool
+    with _postgres_pool_lock:
+        pool, _postgres_pool = _postgres_pool, None
+    if pool is not None:
+        pool.close(timeout=5)
+
+
+atexit.register(close_postgres_pool)
 
 
 def get_db():
@@ -245,14 +316,15 @@ def get_db():
         database_url = os.environ.get("DATABASE_URL", "").strip()
         if not database_url:
             raise RuntimeError("DATABASE_URL is required when DB_BACKEND=postgres.")
-        import psycopg
-        from psycopg.conninfo import make_conninfo
-
-        connection = psycopg.connect(
-            make_conninfo(database_url, sslmode="require"),
-            row_factory=_postgres_row_factory,
-        )
-        return _PostgresConnection(connection)
+        pool = _get_postgres_pool(database_url)
+        started = time.perf_counter()
+        try:
+            connection = pool.getconn()
+        finally:
+            _record_request_db_time(
+                pool_wait_ms=(time.perf_counter() - started) * 1000
+            )
+        return _PostgresConnection(connection, pool)
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row

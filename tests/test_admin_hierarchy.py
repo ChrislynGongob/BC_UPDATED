@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
+from flask import session
 
 from werkzeug.security import generate_password_hash
 
@@ -89,6 +90,16 @@ class AdminHierarchyTests(unittest.TestCase):
         self.assertEqual(self.client.get("/admin/administrators").status_code, 200)
         self.set_session(self.regular_id)
         self.assertEqual(self.client.get("/admin/administrators").status_code, 403)
+
+    def test_current_user_is_loaded_once_per_request(self):
+        with A.app.test_request_context("/admin/administrators"):
+            session["user_id"] = self.founder_id
+            with patch.object(A.dbh, "get_db", wraps=dbh.get_db) as open_connection:
+                first = A.current_user()
+                second = A.current_user()
+            self.assertEqual(first["id"], self.founder_id)
+            self.assertEqual(second["id"], self.founder_id)
+            self.assertEqual(open_connection.call_count, 1)
 
     def test_regular_admin_cannot_create_accounts_directly(self):
         self.assertEqual(self.create_admin(self.regular_id).status_code, 403)

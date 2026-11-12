@@ -105,19 +105,26 @@ class PostgreSQLTranslationTests(unittest.TestCase):
     def test_postgres_connection_forces_ssl_and_rolls_back_on_close(self):
         connection = Mock()
         connection.info.transaction_status = psycopg.pq.TransactionStatus.IDLE
+        pool = Mock()
+        pool.getconn.return_value = connection
         with patch.dict(
             os.environ,
             {
                 "DB_BACKEND": "postgres",
                 "DATABASE_URL": "postgresql://test-user:test-password@localhost:5432/test_db",
             },
-        ), patch("psycopg.connect", return_value=connection) as connect:
+        ), patch.object(dbh, "_postgres_pool", None), patch(
+            "psycopg_pool.ConnectionPool", return_value=pool
+        ) as pool_factory:
             handle = dbh.get_db()
-            self.assertIn("sslmode=require", connect.call_args.args[0])
-            self.assertIs(connect.call_args.kwargs["row_factory"], dbh._postgres_row_factory)
+            self.assertIn("sslmode=require", pool_factory.call_args.kwargs["conninfo"])
+            self.assertIs(
+                pool_factory.call_args.kwargs["kwargs"]["row_factory"],
+                dbh._postgres_row_factory,
+            )
             handle.close()
+        pool.putconn.assert_called_once_with(connection)
         connection.rollback.assert_not_called()
-        connection.close.assert_called_once()
 
     def test_postgres_schema_is_never_initialized_automatically(self):
         with patch.dict(os.environ, {"DB_BACKEND": "postgres"}):
