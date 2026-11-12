@@ -39,8 +39,8 @@ class FoundingAdminSetupTests(unittest.TestCase):
     def test_existing_founder_and_password_are_never_overwritten(self):
         conn = dbh.get_db()
         founder_id = conn.execute(
-            "INSERT INTO users (full_name,email,password_hash,role,is_super_admin) "
-            "VALUES (?,?,?,?,1)",
+            "INSERT INTO users (full_name,email,password_hash,role,is_super_admin,is_founding_admin) "
+            "VALUES (?,?,?,?,1,1)",
             (
                 "Old Founding Admin",
                 "old-founder@example.test",
@@ -75,7 +75,7 @@ class FoundingAdminSetupTests(unittest.TestCase):
         self.assertEqual(account["must_reset_pw"], 0)
         self.assertEqual(
             conn.execute(
-                "SELECT COUNT(*) FROM users WHERE role='admin' AND is_super_admin=1"
+                "SELECT COUNT(*) FROM users WHERE role='admin' AND is_founding_admin=1"
             ).fetchone()[0],
             1,
         )
@@ -104,8 +104,8 @@ class FoundingAdminSetupTests(unittest.TestCase):
     def test_refuses_to_take_email_from_another_account(self):
         conn = dbh.get_db()
         founder_id = conn.execute(
-            "INSERT INTO users (full_name,email,password_hash,role,is_super_admin) "
-            "VALUES (?,?,?,?,1)",
+            "INSERT INTO users (full_name,email,password_hash,role,is_super_admin,is_founding_admin) "
+            "VALUES (?,?,?,?,1,1)",
             (
                 "Old Founding Admin",
                 "old-founder@example.test",
@@ -246,11 +246,15 @@ class FoundingAdminSetupTests(unittest.TestCase):
             "profile_picture TEXT,                 -- stored filename of uploaded profile photo, NULL if none",
             "profile_picture TEXT                  -- stored filename of uploaded profile photo, NULL if none",
         )
+        schema = schema.replace(
+            "    is_founding_admin INTEGER NOT NULL DEFAULT 0, -- single system owner; also a Super Admin\n",
+            "",
+        )
         schema = schema.replace("    recovery_email  TEXT\n", "")
         schema = schema.replace(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_founding_admin\n"
-            "    ON users(is_super_admin)\n"
-            "    WHERE role='admin' AND is_super_admin=1;\n\n",
+            "    ON users(is_founding_admin)\n"
+            "    WHERE role='admin' AND is_founding_admin=1;\n\n",
             "",
         )
         conn = sqlite3.connect(legacy_db_path)
@@ -277,10 +281,15 @@ class FoundingAdminSetupTests(unittest.TestCase):
                 (FOUNDING_ADMIN_EMAIL,),
             ).fetchone()
             self.assertEqual(account["recovery_email"], "legacy@example.test")
+            migrated_founder = conn.execute(
+                "SELECT is_super_admin,is_founding_admin,status FROM users WHERE email=?",
+                (FOUNDING_ADMIN_EMAIL,),
+            ).fetchone()
+            self.assertEqual(tuple(migrated_founder), (1, 1, "active"))
             with self.assertRaises(sqlite3.IntegrityError):
                 conn.execute(
-                    "INSERT INTO users (full_name,email,password_hash,role,is_super_admin) "
-                    "VALUES (?,?,?,?,1)",
+                    "INSERT INTO users (full_name,email,password_hash,role,is_super_admin,is_founding_admin) "
+                    "VALUES (?,?,?,?,1,1)",
                     (
                         "Second Founder",
                         "second-founder@example.test",

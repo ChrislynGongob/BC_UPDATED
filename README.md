@@ -260,7 +260,7 @@ python3 app.py
 
 Open **http://127.0.0.1:5000** in your browser.
 
-The Founding Admin login and recovery email is `ralphpatrickga@gmail.com`.
+The designated Founding Admin login and recovery email is `ralphpatrick@gmail.com`.
 `init_founding_admin.py` hashes the administrator-supplied initial password
 and requires a change after first sign-in. Admin password recovery is sent to
 the stored recovery email.
@@ -296,12 +296,55 @@ log in as an Admin and go to Settings — no code editing needed.
 | Resident | pedro.resident@example.com         | `DEMO_RESIDENT_PASSWORD` | |
 
 The demo passwords are supplied as environment variables and are not printed.
-The Founding Admin is `ralphpatrickga@gmail.com`; configure its initial password
+The designated Founding Admin is `ralphpatrick@gmail.com`; configure its initial password
 with `FOUNDING_ADMIN_PASSWORD` and change it after first login.
 
 
 You can also register a brand-new resident account from the login page — staff and
 admin accounts can only be created from inside the Admin Dashboard.
+
+## Administrator hierarchy and Founding Admin transfer
+
+`users.is_founding_admin` designates the single Founding Admin. The Founding
+Admin must also have `is_super_admin=1`. Multiple Super Admins are allowed;
+Super Admins can create regular Admin accounts, and regular Admins cannot create
+accounts or change elevated roles. The application does not transfer ownership
+on deployment or during account setup.
+
+For the current Supabase PostgreSQL deployment:
+
+1. Schedule a maintenance window and take a recoverable Supabase database
+   backup. Confirm Ralph's account is the active Super Admin with ID 17.
+2. In the Supabase SQL editor, review and run
+   `postgres_migrations/001_admin_hierarchy.sql` as one transaction. It adds
+   `is_founding_admin`, marks only account 17 as Founding Admin, retains his
+   Super Admin flag and active status, and replaces the old singleton-Super-Admin
+   index with a single-Founder index. It aborts if account 17 does not match the
+   expected active Super Admin state or if a Founder is already designated.
+3. Deploy the application code to Render. Do not add the migration to the
+   Render start command. The app checks that the PostgreSQL schema exists and
+   does not apply PostgreSQL migrations automatically.
+4. Sign in as the current Founder and open **Administrators**. Create one regular
+   Admin account for `ralphpatrick@gmail.com`, using that address as the login
+   email and a verified, accessible recovery email. If the email already belongs
+   to any account, stop and resolve it without creating a duplicate.
+5. Have the replacement sign in and complete email OTP MFA. Verify they can
+   access the app and that their account is still a regular Admin. Do not transfer
+   until this test succeeds.
+6. Within 24 hours of the replacement's successful OTP login, the current Founder
+   must complete their own MFA login and, within 10 minutes, submit the Founding
+   Admin transfer form. Confirm the replacement email exactly. The transaction
+   promotes the replacement to Founder and Super Admin, leaves Ralph active as a
+   Super Admin, preserves both password hashes and account records, and writes an
+   audit event.
+7. Verify the Administrators page shows one Founding Admin, the replacement can
+   sign in with OTP, and Ralph remains active with Super Admin status. Retain the
+   pre-transfer backup through this verification.
+
+To roll back before ownership transfer, restore the backup or roll back the
+application and schema deployment while Ralph remains Founder. After transfer,
+do not edit role flags manually; use a separately reviewed, authorized transfer
+transaction or restore the pre-transfer snapshot if a full rollback is required.
 
 ## Running the tests
 

@@ -15,7 +15,7 @@
       <h3 style="margin-bottom:2px;">{{ current_user.full_name }}</h3>
       <p class="muted" style="margin:0;">{{ current_user.email }}</p>
       <span class="tag" style="margin-top:6px; display:inline-block; text-transform:capitalize;">
-        {{ 'Founding Administrator' if current_user.role=='admin' and current_user.is_super_admin else current_user.role }}
+        {{ 'Founding Administrator' if current_user.role=='admin' and current_user.is_founding_admin else ('Super Administrator' if current_user.role=='admin' and current_user.is_super_admin else current_user.role) }}
       </span>
     </div>
   </div>

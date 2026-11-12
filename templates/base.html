@@ -51,7 +51,7 @@
         <div class="nav-section-label">People</div>
         <a href="{{ url_for('admin_residents') }}" class="{{ 'active' if request.endpoint=='admin_residents' }}"><span class="nav-icon" aria-hidden="true">♙</span>Manage Residents</a>
         <a href="{{ url_for('admin_staff') }}" class="{{ 'active' if request.endpoint=='admin_staff' }}"><span class="nav-icon" aria-hidden="true">♧</span>Manage Staff</a>
-        {% if current_user.is_super_admin %}
+        {% if current_user.is_super_admin or current_user.is_founding_admin %}
         <a href="{{ url_for('admin_administrators') }}" class="{{ 'active' if request.endpoint=='admin_administrators' }}"><span class="nav-icon" aria-hidden="true">◇</span>Administrators</a>
         {% endif %}
         <div class="nav-section-label">Services</div>

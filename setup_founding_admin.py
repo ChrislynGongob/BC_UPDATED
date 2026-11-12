@@ -15,7 +15,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import db as dbh
 
 
-FOUNDING_ADMIN_EMAIL = "chrislyngongob143@gmail.com"
+FOUNDING_ADMIN_EMAIL = "ralphpatrick@gmail.com"
 
 
 def setup_founding_admin():
@@ -53,8 +53,8 @@ def setup_founding_admin():
     try:
         conn.execute("BEGIN IMMEDIATE")
         founders = conn.execute(
-            "SELECT id, full_name, role, is_super_admin, status "
-            "FROM users WHERE role='admin' AND is_super_admin=1"
+            "SELECT id, full_name, role, is_super_admin, is_founding_admin, status "
+            "FROM users WHERE role='admin' AND is_founding_admin=1"
         ).fetchall()
         if len(founders) > 1:
             raise ValueError(
@@ -69,7 +69,8 @@ def setup_founding_admin():
 
         if founders:
             founder = founders[0]
-            if founder["role"] != "admin" or not founder["is_super_admin"]:
+            if (founder["role"] != "admin" or not founder["is_founding_admin"]
+                    or not founder["is_super_admin"]):
                 raise ValueError("The existing Founding Admin could not be identified safely.")
             if founder["status"] != "active":
                 raise ValueError(
@@ -99,8 +100,8 @@ def setup_founding_admin():
 
             conn.execute(
                 "INSERT INTO users (full_name, email, recovery_email, password_hash, role, "
-                "is_super_admin, status, must_reset_pw, failed_logins, locked_until) "
-                "VALUES (?, ?, ?, ?, 'admin', 1, 'active', 1, 0, NULL)",
+                "is_super_admin, is_founding_admin, status, must_reset_pw, failed_logins, locked_until) "
+                "VALUES (?, ?, ?, ?, 'admin', 1, 1, 'active', 1, 0, NULL)",
                 (
                     name,
                     FOUNDING_ADMIN_EMAIL,
@@ -117,18 +118,19 @@ def setup_founding_admin():
             target=FOUNDING_ADMIN_EMAIL,
         )
         verified = conn.execute(
-            "SELECT id, role, is_super_admin, status, must_reset_pw, "
+            "SELECT id, role, is_super_admin, is_founding_admin, status, must_reset_pw, "
             "recovery_email, password_hash "
             "FROM users WHERE lower(email)=?",
             (FOUNDING_ADMIN_EMAIL,),
         ).fetchall()
         founder_count = conn.execute(
-            "SELECT COUNT(*) FROM users WHERE role='admin' AND is_super_admin=1"
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND is_founding_admin=1"
         ).fetchone()[0]
         if (
             len(verified) != 1
             or verified[0]["role"] != "admin"
             or not verified[0]["is_super_admin"]
+            or not verified[0]["is_founding_admin"]
             or verified[0]["status"] != "active"
             or not verified[0]["must_reset_pw"]
             or verified[0]["recovery_email"] != FOUNDING_ADMIN_EMAIL

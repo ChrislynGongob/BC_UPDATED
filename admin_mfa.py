@@ -167,6 +167,10 @@ def register_admin_mfa(app, dbh, email_service):
                         return redirect(url_for("first_login_reset"))
                     session["user_id"] = user["id"]
                     session["role"] = user["role"]
+                    session["admin_mfa_verified_at"] = now.isoformat()
+                    session["admin_mfa_proof"] = digest(
+                        f"admin-credentials:{user['id']}:{user['password_hash']}:{user['email']}"
+                    )
                     return redirect(url_for("admin_dashboard"))
                 if usable:
                     conn.execute("UPDATE admin_otp_challenges SET attempts=attempts+1 WHERE user_id=?", (user["id"],))

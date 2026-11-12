@@ -27,7 +27,7 @@ class AdminMFATests(unittest.TestCase):
             self.addCleanup(mocker.stop)
         dbh.init_db()
         self.conn_execute(
-            "INSERT INTO users(full_name,email,password_hash,role,is_super_admin) VALUES (?,?,?,'admin',1)",
+            "INSERT INTO users(full_name,email,password_hash,role,is_super_admin,is_founding_admin) VALUES (?,?,?,'admin',1,1)",
             ("Founding Admin", "admin@example.test", generate_password_hash("Admin@1234")),
         )
         self.client = A.app.test_client()
@@ -223,7 +223,7 @@ class AdminMFATests(unittest.TestCase):
             response = client.post("/login", data={"email": email, "password": "User@1234"})
             self.assertEqual(response.location, "/dashboard" if role == "resident" else "/staff/dashboard")
         self.send.assert_not_called()
-        self.conn_execute("UPDATE users SET is_super_admin=0 WHERE id=1")
+        self.conn_execute("UPDATE users SET is_super_admin=0,is_founding_admin=0 WHERE id=1")
         self.login()
         self.post("/verify-otp", self.code())
         self.assertEqual(self.client.post("/admin/administrators", data={}).status_code, 403)

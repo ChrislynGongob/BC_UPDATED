@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
     position TEXT,
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
     is_super_admin INTEGER NOT NULL DEFAULT 0,
+    is_founding_admin INTEGER NOT NULL DEFAULT 0,
     must_reset_pw INTEGER NOT NULL DEFAULT 0,
     failed_logins INTEGER NOT NULL DEFAULT 0,
     locked_until TEXT,
@@ -234,7 +235,7 @@ CREATE TABLE IF NOT EXISTS announcements (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_founding_admin
-    ON users(is_super_admin) WHERE role='admin' AND is_super_admin=1;
+    ON users(is_founding_admin) WHERE role='admin' AND is_founding_admin=1;
 CREATE INDEX IF NOT EXISTS idx_requests_resident ON requests(resident_id);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);
 CREATE INDEX IF NOT EXISTS idx_requests_created_type_status ON requests(created_at, request_type, status);

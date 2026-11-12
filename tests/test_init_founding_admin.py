@@ -47,6 +47,7 @@ class InitFoundingAdminTests(unittest.TestCase):
         self.assertEqual(founder["full_name"], "Test Founding Admin")
         self.assertEqual(founder["role"], "admin")
         self.assertEqual(founder["is_super_admin"], 1)
+        self.assertEqual(founder["is_founding_admin"], 1)
         self.assertEqual(founder["status"], "active")
         self.assertEqual(founder["must_reset_pw"], 1)
         self.assertEqual(founder["recovery_email"], FOUNDING_ADMIN_EMAIL)
@@ -73,8 +74,8 @@ class InitFoundingAdminTests(unittest.TestCase):
         conn = dbh.get_db()
         conn.execute(
             "INSERT INTO users "
-            "(full_name,email,recovery_email,password_hash,role,is_super_admin,must_reset_pw) "
-            "VALUES (?,?,?,?, 'admin',1,0)",
+            "(full_name,email,recovery_email,password_hash,role,is_super_admin,is_founding_admin,must_reset_pw) "
+            "VALUES (?,?,?,?, 'admin',1,1,0)",
             (
                 "Existing Founder",
                 FOUNDING_ADMIN_EMAIL,

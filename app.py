@@ -10,7 +10,7 @@ import mimetypes
 import secrets
 import threading
 from functools import wraps
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
 
 from flask import (
@@ -28,6 +28,7 @@ import email_service
 from admin_mfa import register_admin_mfa
 import complaint_analytics as complaint_analytics_service
 import storage as storage_service
+from setup_founding_admin import FOUNDING_ADMIN_EMAIL
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -2737,7 +2738,7 @@ def reset_staff_password(user, staff_id):
 def admin_administrators(user):
     conn = dbh.get_db()
     if request.method == "POST":
-        if not user["is_super_admin"]:
+        if not (user["is_super_admin"] or user["is_founding_admin"]):
             conn.close()
             abort(403)
         full_name = request.form.get("full_name", "").strip()
@@ -2753,12 +2754,13 @@ def admin_administrators(user):
             flash("Enter a valid Philippine mobile number, such as 0917 123 4567.", "error")
         elif not valid_password(password):
             flash("Password must be at least 8 characters and include a letter and a number.", "error")
-        elif conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone():
+        elif conn.execute("SELECT id FROM users WHERE lower(email)=?", (email,)).fetchone():
             flash("An account with this email already exists.", "error")
         else:
             conn.execute(
                 "INSERT INTO users (full_name, email, recovery_email, password_hash, role, "
-                "contact_number, created_by) VALUES (?,?,?,?,?,?,?)",
+                "is_super_admin, is_founding_admin, contact_number, created_by) "
+                "VALUES (?,?,?,?,?,0,0,?,?)",
                 (
                     full_name,
                     email,
@@ -2776,11 +2778,114 @@ def admin_administrators(user):
         return redirect(url_for("admin_administrators"))
 
     rows = conn.execute(
-        "SELECT id, full_name, email, role, is_super_admin, created_at, contact_number "
+        "SELECT id, full_name, email, role, is_super_admin, is_founding_admin, created_at, contact_number "
         "FROM users WHERE role='admin' ORDER BY created_at ASC"
     ).fetchall()
     conn.close()
-    return render_template("admin/administrators.html", rows=rows)
+    is_founder = bool(user["is_founding_admin"])
+    return render_template(
+        "admin/administrators.html", rows=rows,
+        can_manage_admins=bool(user["is_super_admin"] or is_founder),
+        is_founder=is_founder,
+        founder_transfer_csrf=(session.setdefault("founder_transfer_csrf", secrets.token_urlsafe(32))
+                               if is_founder else ""),
+    )
+
+
+@app.route("/admin/administrators/transfer-founding-admin", methods=["POST"])
+@login_required("admin")
+def transfer_founding_admin(user):
+    if not user["is_founding_admin"]:
+        abort(403)
+    expected_csrf = session.get("founder_transfer_csrf", "")
+    supplied_csrf = request.form.get("csrf_token", "")
+    if not expected_csrf or not hmac.compare_digest(expected_csrf, supplied_csrf):
+        abort(400)
+    verified_at = session.get("admin_mfa_verified_at")
+    mfa_proof = session.get("admin_mfa_proof", "")
+    try:
+        verified_at = datetime.fromisoformat(verified_at)
+    except (TypeError, ValueError):
+        abort(403)
+    if verified_at.tzinfo:
+        verified_at = verified_at.replace(tzinfo=None)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if verified_at > now or now - verified_at > timedelta(minutes=10):
+        abort(403)
+
+    target_email = request.form.get("email", "").strip().lower()
+    confirmation = request.form.get("confirmation", "").strip()
+    if (not valid_email(target_email) or target_email != FOUNDING_ADMIN_EMAIL
+            or confirmation.lower() != target_email):
+        flash(f"Enter {FOUNDING_ADMIN_EMAIL} and repeat it to confirm.", "error")
+        return redirect(url_for("admin_administrators"))
+
+    conn = dbh.get_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        founder = conn.execute(
+            "SELECT * FROM users WHERE id=? AND role='admin' "
+            "AND is_founding_admin=1 AND is_super_admin=1 AND status='active'",
+            (user["id"],),
+        ).fetchone()
+        expected_proof = hmac.new(
+            app.secret_key.encode(),
+            f"admin-credentials:{user['id']}:{founder['password_hash']}:{founder['email']}".encode(),
+            hashlib.sha256,
+        ).hexdigest() if founder else ""
+        if not founder or not hmac.compare_digest(mfa_proof, expected_proof):
+            conn.rollback()
+            abort(403)
+        target = conn.execute(
+            "SELECT * FROM users WHERE lower(email)=?", (target_email,)
+        ).fetchone()
+        if (not target or target["id"] == founder["id"] or target["role"] != "admin"
+                or target["status"] != "active" or target["is_founding_admin"]
+                or target["is_super_admin"]):
+            conn.rollback()
+            flash("The replacement must be an active regular Admin account.", "error")
+            return redirect(url_for("admin_administrators"))
+        challenge = conn.execute(
+            "SELECT used_at FROM admin_otp_challenges WHERE user_id=?",
+            (target["id"],),
+        ).fetchone()
+        try:
+            target_mfa_at = datetime.fromisoformat(challenge["used_at"]) if challenge and challenge["used_at"] else None
+        except ValueError:
+            target_mfa_at = None
+        if (not target_mfa_at or target_mfa_at > now
+                or now - target_mfa_at > timedelta(hours=24)):
+            conn.rollback()
+            flash("The replacement must complete email OTP login within the last 24 hours.", "error")
+            return redirect(url_for("admin_administrators"))
+
+        old_updated = conn.execute(
+            "UPDATE users SET is_founding_admin=0 WHERE id=? AND is_founding_admin=1 "
+            "AND is_super_admin=1 AND status='active'",
+            (founder["id"],),
+        )
+        new_updated = conn.execute(
+            "UPDATE users SET is_founding_admin=1, is_super_admin=1 "
+            "WHERE id=? AND role='admin' AND status='active' "
+            "AND is_founding_admin=0 AND is_super_admin=0",
+            (target["id"],),
+        )
+        if old_updated.rowcount != 1 or new_updated.rowcount != 1:
+            conn.rollback()
+            abort(409)
+        dbh.log_action(
+            conn, founder, "Transferred Founding Admin ownership",
+            target=target["email"], details=f"previous_founder_id={founder['id']}; new_founder_id={target['id']}",
+        )
+        conn.commit()
+        session.pop("admin_mfa_verified_at", None)
+        session.pop("admin_mfa_proof", None)
+        flash("Founding Admin ownership transferred. Both accounts remain active.", "success")
+    finally:
+        if conn.in_transaction:
+            conn.rollback()
+        conn.close()
+    return redirect(url_for("admin_administrators"))
 
 
 @app.route("/admin/requests")

@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS users (
     office          TEXT CHECK (office IN ('treasurer', 'secretary', 'bpso')),  -- staff only: which office they belong to (decides what they can access)
     position        TEXT,                 -- staff display label (derived from office)
     status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
-    is_super_admin  INTEGER NOT NULL DEFAULT 0,   -- only the Founding Admin can create other admins
+    is_super_admin  INTEGER NOT NULL DEFAULT 0,   -- Super Admins may create regular Admins
+    is_founding_admin INTEGER NOT NULL DEFAULT 0, -- single system owner; also a Super Admin
     must_reset_pw   INTEGER NOT NULL DEFAULT 0,  -- staff must set permanent password on first login
     failed_logins   INTEGER NOT NULL DEFAULT 0,
     locked_until    TEXT,
@@ -25,8 +26,8 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_founding_admin
-    ON users(is_super_admin)
-    WHERE role='admin' AND is_super_admin=1;
+    ON users(is_founding_admin)
+    WHERE role='admin' AND is_founding_admin=1;
 
 CREATE TABLE IF NOT EXISTS requests (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -57,8 +57,8 @@ def init_founding_admin():
         try:
             conn.execute(
                 "INSERT INTO users (full_name, email, recovery_email, password_hash, "
-                "role, is_super_admin, status, must_reset_pw) "
-                "VALUES (?, ?, ?, ?, 'admin', 1, 'active', 1)",
+                "role, is_super_admin, is_founding_admin, status, must_reset_pw) "
+                "VALUES (?, ?, ?, ?, 'admin', 1, 1, 'active', 1)",
                 (
                     name,
                     FOUNDING_ADMIN_EMAIL,

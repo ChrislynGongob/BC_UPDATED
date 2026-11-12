@@ -452,6 +452,10 @@ def migrate_db():
         conn.execute(
             "ALTER TABLE users ADD COLUMN is_super_admin INTEGER NOT NULL DEFAULT 0"
         )
+    if "is_founding_admin" not in user_cols:
+        conn.execute(
+            "ALTER TABLE users ADD COLUMN is_founding_admin INTEGER NOT NULL DEFAULT 0"
+        )
     if "must_reset_pw" not in user_cols:
         conn.execute(
             "ALTER TABLE users ADD COLUMN must_reset_pw INTEGER NOT NULL DEFAULT 0"
@@ -477,17 +481,32 @@ def migrate_db():
                 "WHERE role='admin' AND address LIKE 'recovery:%' "
                 "AND recovery_email IS NULL"
             )
+    # Upgrade the legacy single-founder flag without changing Super Admin status.
+    # Existing deployments had exactly one is_super_admin account for the founder.
     founder_count = conn.execute(
-        "SELECT COUNT(*) FROM users WHERE role='admin' AND is_super_admin=1"
+        "SELECT COUNT(*) FROM users WHERE role='admin' AND is_founding_admin=1"
     ).fetchone()[0]
+    legacy_founders = conn.execute(
+        "SELECT id FROM users WHERE role='admin' AND is_super_admin=1"
+    ).fetchall()
+    if founder_count == 0 and len(legacy_founders) == 1:
+        conn.execute(
+            "UPDATE users SET is_founding_admin=1 "
+            "WHERE id=? AND role='admin' AND is_super_admin=1 AND status='active'",
+            (legacy_founders[0]["id"],),
+        )
+        founder_count = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND is_founding_admin=1"
+        ).fetchone()[0]
     if founder_count > 1:
         conn.close()
         raise sqlite3.IntegrityError(
             "Multiple Founding Admin accounts exist; resolve duplicates before migration."
         )
+    conn.execute("DROP INDEX IF EXISTS idx_users_single_founding_admin")
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_founding_admin "
-        "ON users(is_super_admin) WHERE role='admin' AND is_super_admin=1"
+        "ON users(is_founding_admin) WHERE role='admin' AND is_founding_admin=1"
     )
     if "office" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN office TEXT")
