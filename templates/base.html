@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}BarangayConnect{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=2) }}">
 </head>
 <body data-role="{{ current_user.role if current_user else '' }}" class="{% if current_user %}has-shell{% else %}auth-body{% endif %}{% if current_user and current_user.role == 'resident' and request.endpoint == 'resident_dashboard' %} resident-dashboard-page{% endif %}">
 
@@ -246,6 +246,6 @@
 {% if current_user %}
 <script src="{{ url_for('static', filename='js/partial-navigation.js') }}" defer></script>
 {% endif %}
-<script src="{{ url_for('static', filename='js/password-visibility.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/password-visibility.js', v=2) }}" defer></script>
 </body>
 </html>
