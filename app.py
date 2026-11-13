@@ -46,7 +46,8 @@ PROFILE_IMAGE_EXT = {"jpg", "jpeg", "png"}
 PROFILE_IMAGE_MAX_SIZE = 20 * 1024 * 1024
 COMPLAINT_ATTACHMENT_EXT = {"jpg", "jpeg", "png", "webp", "pdf", "mp4", "mov", "webm", "avi", "m4v"}
 COMPLAINT_ATTACHMENT_MAX_FILES = 5
-COMPLAINT_ATTACHMENT_MAX_TOTAL_BYTES = 100 * 1024 * 1024
+COMPLAINT_VIDEO_MAX_SIZE = 500 * 1024 * 1024
+COMPLAINT_ATTACHMENT_MAX_TOTAL_BYTES = COMPLAINT_VIDEO_MAX_SIZE
 COMPLAINT_DAILY_LIMIT = 5
 COMPLAINT_ALLOWANCE_MAX = COMPLAINT_DAILY_LIMIT
 
@@ -172,6 +173,7 @@ REQUEST_STATUS_COLORS = {
 
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 300
 _secret_key = os.environ.get("SECRET_KEY")
 if not _secret_key and (
     os.environ.get("RENDER", "").lower() == "true"
@@ -222,6 +224,8 @@ def _automatic_backup():
     """Daily automatic database backup (see db.auto_backup_if_due). Never blocks a request."""
     if request.endpoint == "profile":
         request.max_content_length = PROFILE_IMAGE_MAX_SIZE + 1024 * 1024
+    elif request.endpoint == "new_complaint":
+        request.max_content_length = COMPLAINT_ATTACHMENT_MAX_TOTAL_BYTES + 1024 * 1024
     dbh.auto_backup_if_due()
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE + 1024
 
@@ -251,6 +255,31 @@ def _log_request_duration(response):
             db_stats.get("queries", 0), db_stats.get("query_ms", 0.0),
             db_stats.get("pool_wait_ms", 0.0), getattr(g, "_template_ms", 0.0),
         )
+    return response
+
+
+@app.after_request
+def _extract_partial_navigation_content(response):
+    if response.mimetype == "text/html":
+        response.headers["Cache-Control"] = "private, no-store"
+    if request.headers.get("X-BC-Partial") != "1":
+        return response
+    if response.status_code != 200 or not response.mimetype.startswith("text/html"):
+        return response
+    html = response.get_data(as_text=True)
+    start_marker = "<!-- BC_NAV_CONTENT_START -->"
+    end_marker = "<!-- BC_NAV_CONTENT_END -->"
+    start = html.find(start_marker)
+    end = html.find(end_marker, start + len(start_marker)) if start >= 0 else -1
+    if start < 0 or end < 0:
+        return response
+    content_start = start + len(start_marker)
+    response.set_data(
+        '<div class="bc-nav-fragment">'
+        + html[content_start:end]
+        + "</div>"
+    )
+    response.headers["X-BC-Partial"] = "1"
     return response
 
 
@@ -532,8 +561,10 @@ def validate_complaint_attachment_files(files):
         f.stream.seek(0)
         if size <= 0:
             raise ValueError(f"{name} is empty and cannot be uploaded.")
-        if size > MAX_FILE_SIZE:
-            raise ValueError(f"{name} exceeds the 5 MB individual file limit.")
+        max_size = COMPLAINT_VIDEO_MAX_SIZE if ext in {"mp4", "mov", "webm", "avi", "m4v"} else MAX_FILE_SIZE
+        if size > max_size:
+            limit_mb = max_size // (1024 * 1024)
+            raise ValueError(f"{name} exceeds the {limit_mb} MB individual file limit.")
         total_bytes += size
         selected.append(f)
     if len(selected) > COMPLAINT_ATTACHMENT_MAX_FILES:

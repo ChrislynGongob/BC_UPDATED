@@ -173,6 +173,26 @@ p { line-height: 1.55; }
 .hamburger { display: none; font-size: 20px; cursor: pointer; color: var(--navy); }
 
 .content { padding: 26px 28px 60px; max-width: 1180px; width: 100%; }
+.content.bc-nav-loading { position: relative; }
+.content.bc-nav-loading::before {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 0;
+  width: 28%;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--primary, #2563eb), transparent);
+  animation: bc-nav-progress 900ms ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes bc-nav-progress {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(380%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .content.bc-nav-loading::before { animation-duration: 2s; }
+}
 
 /* ---------------------------------------------------------------- flash */
 .flash-stack { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
@@ -384,6 +404,8 @@ textarea {
 .file-list a { display: block; padding: 8px 0; }
 
 /* ---------------------------------------------------------------- attachments */
+.complaint-attachment-input { font-size: 0; }
+.complaint-attachment-input::file-selector-button { font-size: 14px; }
 .attachment-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 14px; margin-top: 6px;

@@ -48,6 +48,19 @@ class AdminHierarchyTests(unittest.TestCase):
         finally:
             conn.close()
 
+    def insert_bpso_staff(self):
+        conn = dbh.get_db()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO users(full_name,email,password_hash,role,office,status) "
+                "VALUES (?,?,?,'staff','bpso','active')",
+                ("BPSO Staff", "bpso@example.test", generate_password_hash("SafePassword123")),
+            )
+            conn.commit()
+            return cursor.lastrowid
+        finally:
+            conn.close()
+
     def set_session(self, user_id, mfa=False):
         with self.client.session_transaction() as state:
             state.clear()
@@ -100,6 +113,75 @@ class AdminHierarchyTests(unittest.TestCase):
             self.assertEqual(first["id"], self.founder_id)
             self.assertEqual(second["id"], self.founder_id)
             self.assertEqual(open_connection.call_count, 1)
+
+    def test_staff_dashboard_and_complaints_support_partial_and_full_responses(self):
+        staff_id = self.insert_bpso_staff()
+        self.set_session(staff_id)
+
+        dashboard = self.client.get("/staff/dashboard")
+        self.assertEqual(dashboard.status_code, 200)
+        self.assertIn(b"class=\"sidebar\"", dashboard.data)
+        self.assertEqual(dashboard.headers["Cache-Control"], "private, no-store")
+
+        dashboard_partial = self.client.get(
+            "/staff/dashboard", headers={"X-BC-Partial": "1"}
+        )
+        self.assertEqual(dashboard_partial.status_code, 200)
+        self.assertEqual(dashboard_partial.headers["X-BC-Partial"], "1")
+        self.assertIn(b"Staff dashboard overview", dashboard_partial.data)
+        self.assertNotIn(b"class=\"sidebar\"", dashboard_partial.data)
+
+        complaints_partial = self.client.get(
+            "/staff/complaints?priority=High", headers={"X-BC-Partial": "1"}
+        )
+        self.assertEqual(complaints_partial.status_code, 200)
+        self.assertIn(b"name=\"status\"", complaints_partial.data)
+        self.assertIn(b"name=\"priority\" value=\"High\"", complaints_partial.data)
+        self.assertNotIn(b"class=\"sidebar\"", complaints_partial.data)
+
+        failed_post = self.client.post(
+            "/staff/complaints", headers={"X-BC-Partial": "1"}
+        )
+        self.assertEqual(failed_post.status_code, 405)
+
+    def test_admin_and_resident_pages_support_partial_responses(self):
+        self.set_session(self.founder_id)
+        admin_page = self.client.get(
+            "/admin/announcements", headers={"X-BC-Partial": "1"}
+        )
+        self.assertEqual(admin_page.status_code, 200)
+        self.assertEqual(admin_page.headers["X-BC-Partial"], "1")
+        self.assertIn(b"Post a New Announcement", admin_page.data)
+
+        conn = dbh.get_db()
+        try:
+            cursor = conn.execute(
+                "INSERT INTO users(full_name,email,password_hash,role,status) "
+                "VALUES (?,?,?,'resident','active')",
+                ("Test Resident", "resident@example.test", generate_password_hash("SafePassword123")),
+            )
+            conn.commit()
+            resident_id = cursor.lastrowid
+        finally:
+            conn.close()
+        self.set_session(resident_id)
+        resident_page = self.client.get("/dashboard", headers={"X-BC-Partial": "1"})
+        self.assertEqual(resident_page.status_code, 200)
+        self.assertEqual(resident_page.headers["X-BC-Partial"], "1")
+        self.assertIn(b"My Dashboard", resident_page.data)
+
+        denied = self.client.get(
+            "/staff/dashboard", headers={"X-BC-Partial": "1"}
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.assertNotIn("X-BC-Partial", denied.headers)
+
+    def test_static_navigation_asset_is_cacheable_but_html_is_not(self):
+        page = self.client.get("/login")
+        self.assertIn("no-store", page.headers["Cache-Control"])
+        asset = self.client.get("/static/js/partial-navigation.js")
+        self.assertIn("public", asset.headers["Cache-Control"])
+        self.assertIn("max-age=300", asset.headers["Cache-Control"])
 
     def test_regular_admin_cannot_create_accounts_directly(self):
         self.assertEqual(self.create_admin(self.regular_id).status_code, 403)
