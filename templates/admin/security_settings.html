@@ -2,6 +2,49 @@
 {% block title %}Security Settings — BarangayConnect{% endblock %}
 {% block page_title %}Security Settings{% endblock %}
 {% block content %}
-<div class="stat-grid"><div class="stat-card"><div class="num">{{ active_admins }}</div><div class="label">Active administrators</div></div><div class="stat-card"><div class="num">{{ locked_accounts }}</div><div class="label">Accounts currently locked</div></div><div class="stat-card"><div class="num">{{ max_failed_logins }}</div><div class="label">Failed attempts before lockout</div></div><div class="stat-card"><div class="num">{{ lockout_minutes }} min</div><div class="label">Lockout duration</div></div></div>
-<div class="card"><h2>Authentication</h2><p>Administrator accounts require email one-time-code verification. OTP challenges are single-use and time limited. Passwords, OTP values, and authentication secrets are not displayed here.</p><h3>Account lockout</h3><p>Accounts are temporarily locked after repeated failed password attempts. Unlock occurs after the configured timeout.</p><div class="actions-row"><a class="btn btn-outline" href="{{ url_for('audit_logs', module='authentication') }}">View authentication events</a><a class="btn btn-outline" href="{{ url_for('user_role_administration') }}">Manage accounts</a></div></div>
+<div class="stat-grid">
+  <div class="stat-card"><div class="num">{{ active_admins }}</div><div class="label">Active administrators</div></div>
+  <div class="stat-card"><div class="num">{{ locked_accounts }}</div><div class="label">Accounts currently locked</div></div>
+  <div class="stat-card"><div class="num">{{ max_failed_logins }}</div><div class="label">Failed password attempts before account lock</div></div>
+  <div class="stat-card"><div class="num">{{ lockout_minutes }} min</div><div class="label">Account lock duration</div></div>
+</div>
+
+<div class="card"><h2>Password policy</h2>
+  <p>Passwords must be {{ min_password_length }}–{{ max_password_length }} characters and include at least one letter and one number. Common passwords are blocked. Password values are stored as secure one-way hashes.</p>
+</div>
+<div class="card"><h2>Administrator multi-factor authentication</h2>
+  <p>Every administrator, including the Founding Admin, verifies sign-in with a single-use code sent to the registered email address. Codes expire after {{ otp_ttl }} minutes, allow {{ otp_attempts }} attempts, and can be sent {{ otp_sends }} times per hour with a {{ otp_resend_seconds }} second resend delay. Delivery credentials are configured on the server and are never shown here.</p>
+</div>
+<div class="card"><h2>Login protection and sessions</h2>
+  <p>Each account locks for {{ lockout_minutes }} minutes after {{ max_failed_logins }} consecutive failed password attempts. An IP address is temporarily rate limited after {{ login_rate_limit }} failed sign-ins in {{ login_rate_window }} minutes. Administrator sessions expire after {{ session_idle_minutes }} minutes of inactivity. Session cookies use HttpOnly and SameSite=Lax; Secure is enabled in production.</p>
+</div>
+
+<div class="card"><h2>Currently locked accounts</h2>
+  {% if locked_rows %}<div class="table-wrap"><table><tr><th>Account</th><th>Role</th><th>Locked until</th><th>Action</th></tr>
+    {% for account in locked_rows %}<tr><td>{{ account.full_name }}<div class="muted">{{ account.email }}</div></td><td>{{ account.role|title }}</td><td>{{ account.locked_until }}</td><td><form method="POST" action="{{ url_for('unlock_security_account', account_id=account.id) }}" onsubmit="return confirm('Unlock this account now?')"><input type="hidden" name="csrf_token" value="{{ unlock_csrf }}"><button class="btn btn-outline btn-sm" type="submit">Unlock account</button></form></td></tr>{% endfor %}
+  </table></div>{% else %}<p>No accounts are currently locked.</p>{% endif %}
+  <p class="muted">Account unlocks are recorded in the audit log. Administrator unlocks require a recent email verification.</p>
+</div>
+
+<div class="card"><h2>Role permission matrix</h2><div class="table-wrap"><table>
+  <tr><th>Role</th><th>Access</th><th>Restrictions</th></tr>
+  <tr><td>Founding Admin</td><td>Administration, accounts, security settings, reports, backups, and all operational modules</td><td>Founding account is protected from role changes, deactivation, archive, and unlock operations.</td></tr>
+  <tr><td>Admin</td><td>Administration and operational modules, account security, reports</td><td>Cannot manage administrator roles or founding account; no backup management.</td></tr>
+  <tr><td>Staff</td><td>Assigned office workflows and permitted operational records</td><td>Access is limited by staff role and assigned office.</td></tr>
+  <tr><td>Resident</td><td>Own profile, submissions, notifications, and resident services</td><td>Can only access their own account data and submissions.</td></tr>
+</table></div><div class="actions-row"><a class="btn btn-outline" href="{{ url_for('user_role_administration') }}">Manage user roles</a></div></div>
+
+<div class="card"><h2>Recent authentication events</h2>
+  <form method="GET" class="filter-form"><div class="filter-grid">
+    <input name="q" value="{{ filters.q }}" placeholder="Search actor, target, action, or IP" aria-label="Search events">
+    <select name="event"><option value="">All event types</option>{% for item in event_types %}<option value="{{ item }}" {{ 'selected' if filters.event==item }}>{{ item }}</option>{% endfor %}</select>
+    <select name="result"><option value="">All results</option><option value="Success" {{ 'selected' if filters.result=='Success' }}>Success</option><option value="Failure" {{ 'selected' if filters.result=='Failure' }}>Failure</option></select>
+    <label>From <input type="date" name="start" value="{{ filters.start }}"></label><label>To <input type="date" name="end" value="{{ filters.end }}"></label>
+    <button class="btn btn-primary btn-sm">Filter events</button>
+  </div></form>
+  {% if events %}<div class="table-wrap"><table><tr><th>When</th><th>Actor</th><th>Event</th><th>Target</th><th>Result</th><th>IP</th></tr>
+    {% for item in events %}<tr><td>{{ item.created_at }}</td><td>{{ item.actor_name or 'System' }}{% if item.actor_role %}<div class="muted">{{ item.actor_role|title }}</div>{% endif %}</td><td>{{ item.action }}</td><td>{{ item.target or '—' }}</td><td>{{ item.result }}</td><td>{{ item.ip_address or '—' }}</td></tr>{% endfor %}
+  </table></div>{% else %}<p>No matching authentication events.</p>{% endif %}
+  <a class="btn btn-outline" href="{{ url_for('audit_logs', module='authentication') }}">Open full audit log</a>
+</div>
 {% endblock %}

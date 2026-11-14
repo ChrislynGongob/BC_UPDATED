@@ -62,14 +62,15 @@ class AdminHierarchyTests(unittest.TestCase):
             conn.close()
 
     def set_session(self, user_id, mfa=False):
+        conn = dbh.get_db()
+        user = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        conn.close()
         with self.client.session_transaction() as state:
             state.clear()
             state["user_id"] = user_id
-            state["role"] = "admin"
-            if mfa:
-                conn = dbh.get_db()
-                user = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
-                conn.close()
+            state["role"] = user["role"]
+            state["auth_version"] = int(user["auth_version"] or 0)
+            if user["role"] == "admin":
                 import hashlib, hmac
                 state["admin_mfa_verified_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
                 state["admin_mfa_proof"] = hmac.new(
@@ -77,13 +78,14 @@ class AdminHierarchyTests(unittest.TestCase):
                     f"admin-credentials:{user_id}:{user['password_hash']}:{user['email']}".encode(),
                     hashlib.sha256,
                 ).hexdigest()
+                state["admin_last_activity_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
                 state["founder_transfer_csrf"] = "csrf-test-token"
 
     def create_admin(self, user_id):
         self.set_session(user_id)
         return self.client.post("/admin/administrators", data={
             "full_name": "New Admin", "email": "new-admin@example.test",
-            "recovery_email": "recovery@example.test", "password": "Password123",
+            "recovery_email": "recovery@example.test", "password": "StrongPassword123",
         })
 
     def test_only_legacy_founder_can_create_regular_admins(self):
@@ -113,9 +115,59 @@ class AdminHierarchyTests(unittest.TestCase):
         self.set_session(self.regular_id)
         self.assertEqual(self.client.get("/admin/administrators").status_code, 403)
 
+    def test_security_settings_displays_policy_and_supports_audited_unlock(self):
+        until = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=15)).strftime("%Y-%m-%d %H:%M:%S")
+        conn = dbh.get_db()
+        conn.execute("UPDATE users SET locked_until=?,failed_logins=5 WHERE id=?", (until, self.regular_id))
+        conn.commit()
+        conn.close()
+        self.set_session(self.founder_id)
+        page = self.client.get("/admin/settings/security")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn(b"12", page.data)
+        self.assertIn(b"Role permission matrix", page.data)
+        with self.client.session_transaction() as state:
+            csrf_token = state["security_unlock_csrf"]
+        response = self.client.post(
+            f"/admin/settings/security/unlock/{self.regular_id}",
+            data={"csrf_token": csrf_token},
+        )
+        self.assertEqual(response.status_code, 302)
+        conn = dbh.get_db()
+        user = conn.execute("SELECT locked_until,failed_logins FROM users WHERE id=?", (self.regular_id,)).fetchone()
+        event = conn.execute(
+            "SELECT action FROM audit_logs WHERE action='Account unlocked by administrator' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        self.assertIsNone(user["locked_until"])
+        self.assertEqual(user["failed_logins"], 0)
+        self.assertIsNotNone(event)
+
+    def test_admin_session_expires_after_twenty_minutes_idle(self):
+        self.set_session(self.founder_id)
+        expired_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=21)
+        with self.client.session_transaction() as state:
+            state["admin_last_activity_at"] = expired_at.isoformat()
+        response = self.client.get("/admin/dashboard")
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login", response.location)
+        conn = dbh.get_db()
+        event = conn.execute(
+            "SELECT action FROM audit_logs WHERE action='Admin session expired due to inactivity'"
+        ).fetchone()
+        conn.close()
+        self.assertIsNotNone(event)
+
     def test_current_user_is_loaded_once_per_request(self):
         with A.app.test_request_context("/admin/administrators"):
             session["user_id"] = self.founder_id
+            session["role"] = "admin"
+            conn = dbh.get_db()
+            user = conn.execute("SELECT * FROM users WHERE id=?", (self.founder_id,)).fetchone()
+            conn.close()
+            session["auth_version"] = int(user["auth_version"] or 0)
+            session["admin_mfa_verified_at"] = datetime.now().isoformat()
+            session["admin_mfa_proof"] = A._admin_session_proof(user)
             with patch.object(A.dbh, "get_db", wraps=dbh.get_db) as open_connection:
                 first = A.current_user()
                 second = A.current_user()
@@ -199,7 +251,7 @@ class AdminHierarchyTests(unittest.TestCase):
         self.set_session(self.founder_id)
         response = self.client.post("/admin/administrators", data={
             "full_name": "Duplicate", "email": "ralphpatrickga@gmail.com",
-            "recovery_email": "recovery@example.test", "password": "Password123",
+            "recovery_email": "recovery@example.test", "password": "StrongPassword123",
         })
         conn = dbh.get_db()
         self.assertEqual(conn.execute(
@@ -212,7 +264,7 @@ class AdminHierarchyTests(unittest.TestCase):
         self.set_session(self.founder_id)
         created = self.client.post("/admin/residents/new", data={
             "full_name": "Archive Resident", "email": "archive@example.test",
-            "password": "Resident123", "address": "Purok 2", "contact_number": "09171234567",
+            "password": "ResidentPassword123", "address": "Purok 2", "contact_number": "09171234567",
         })
         self.assertEqual(created.status_code, 302)
         conn = dbh.get_db()

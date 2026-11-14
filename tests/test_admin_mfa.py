@@ -152,7 +152,7 @@ class AdminMFATests(unittest.TestCase):
         self.assertEqual(self.post("/verify-otp", self.code()).location, "/first-login-reset")
         self.assert_pending()
         self.assertEqual(self.client.get("/first-login-reset").status_code, 200)
-        response = self.client.post("/first-login-reset", data={"password": "Changed@123", "confirm_password": "Changed@123"})
+        response = self.client.post("/first-login-reset", data={"password": "ChangedPass@123", "confirm_password": "ChangedPass@123"})
         self.assertEqual(response.location, "/admin/dashboard")
         self.assertEqual(self.client.get("/admin/dashboard").status_code, 200)
 
@@ -160,7 +160,7 @@ class AdminMFATests(unittest.TestCase):
         self.conn_execute("UPDATE users SET must_reset_pw=1 WHERE id=1")
         with self.client.session_transaction() as state:
             state["pending_reset_user"] = 1
-        response = self.client.post("/first-login-reset", data={"password": "Changed@123", "confirm_password": "Changed@123"})
+        response = self.client.post("/first-login-reset", data={"password": "ChangedPass@123", "confirm_password": "ChangedPass@123"})
         self.assertEqual(response.location, "/login")
         self.assert_pending()
 
@@ -227,6 +227,14 @@ class AdminMFATests(unittest.TestCase):
         self.login()
         self.post("/verify-otp", self.code())
         self.assertEqual(self.client.post("/admin/administrators", data={}).status_code, 403)
+
+    def test_failed_login_attempts_are_throttled_by_ip(self):
+        client = A.app.test_client()
+        for _ in range(A.dbh.LOGIN_RATE_LIMIT):
+            response = client.post("/login", data={"email": "missing@example.test", "password": "BadPassword123"})
+            self.assertEqual(response.status_code, 200)
+        limited = client.post("/login", data={"email": "missing@example.test", "password": "BadPassword123"})
+        self.assertEqual(limited.status_code, 429)
 
 
 if __name__ == "__main__":

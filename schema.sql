@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
     status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
     is_archived     INTEGER NOT NULL DEFAULT 0,
     archived_at     TEXT,
+    auth_version    INTEGER NOT NULL DEFAULT 0,
     is_super_admin  INTEGER NOT NULL DEFAULT 0,   -- legacy compatibility flag; no separate role
     is_founding_admin INTEGER NOT NULL DEFAULT 0, -- single system owner; also a Super Admin
     must_reset_pw   INTEGER NOT NULL DEFAULT 0,  -- staff must set permanent password on first login
@@ -148,6 +149,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     ip_address      TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_audit_logs_ip_action_created
+    ON audit_logs(ip_address, action, created_at);
 
 CREATE TABLE IF NOT EXISTS chat_messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

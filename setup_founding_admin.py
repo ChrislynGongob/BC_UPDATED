@@ -6,13 +6,13 @@ before it is written, and the account must change it after email OTP login.
 """
 
 import os
-import re
 import sqlite3
 import sys
 
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import db as dbh
+from security_policy import valid_password
 
 
 FOUNDING_ADMIN_EMAIL = "ralphpatrickga@gmail.com"
@@ -24,14 +24,10 @@ def setup_founding_admin():
 
     if not name:
         raise ValueError("FOUNDING_ADMIN_NAME is missing.")
-    if (
-        len(password) < 12
-        or not re.search(r"[A-Za-z]", password)
-        or not re.search(r"\d", password)
-    ):
+    if not valid_password(password):
         raise ValueError(
-            "FOUNDING_ADMIN_PASSWORD must have at least 12 characters, "
-            "one letter, and one number."
+            "FOUNDING_ADMIN_PASSWORD must be 12–256 characters, include a letter "
+            "and a number, and not be a common password."
         )
 
     if dbh.get_backend() == "postgres":

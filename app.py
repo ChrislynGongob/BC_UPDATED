@@ -29,9 +29,15 @@ import chatbot
 import priority as prioritymod
 import email_service
 from admin_mfa import register_admin_mfa
+from admin_mfa import (
+    ADMIN_OTP_MAX_ATTEMPTS, ADMIN_OTP_MAX_SENDS_PER_HOUR,
+    ADMIN_OTP_RESEND_DELAY_SECONDS, ADMIN_OTP_TTL_MINUTES,
+    ADMIN_PENDING_MFA_MINUTES,
+)
 import complaint_analytics as complaint_analytics_service
 import storage as storage_service
 from setup_founding_admin import FOUNDING_ADMIN_EMAIL
+from security_policy import MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH, valid_password as _valid_password
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -182,6 +188,18 @@ if not _secret_key and (
 ):
     raise RuntimeError("SECRET_KEY must be configured before production startup.")
 app.secret_key = _secret_key or "dev-secret-key-change-in-production"
+ADMIN_SESSION_IDLE_MINUTES = 20
+ADMIN_REAUTH_MINUTES = 15
+app.config.update(
+    PERMANENT_SESSION_LIFETIME=timedelta(minutes=ADMIN_SESSION_IDLE_MINUTES),
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=(
+        os.environ.get("RENDER", "").lower() == "true"
+        or os.environ.get("APP_ENV", "").lower() == "production"
+    ),
+    SESSION_REFRESH_EACH_REQUEST=True,
+)
 app.config["REQUEST_TIMING_LOGGING"] = os.environ.get(
     "REQUEST_TIMING_LOGGING", "true"
 ).strip().lower() not in {"0", "false", "no", "off"}
@@ -228,6 +246,30 @@ def _automatic_backup():
     elif request.endpoint == "new_complaint":
         request.max_content_length = COMPLAINT_ATTACHMENT_MAX_TOTAL_BYTES + 1024 * 1024
     dbh.auto_backup_if_due()
+
+
+@app.before_request
+def _expire_idle_admin_session():
+    if session.get("role") != "admin" or not session.get("user_id"):
+        return None
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    last_activity = _timestamp(session.get("admin_last_activity_at"))
+    if last_activity and now - last_activity >= timedelta(minutes=ADMIN_SESSION_IDLE_MINUTES):
+        conn = dbh.get_db()
+        actor = conn.execute(
+            "SELECT id,full_name,role FROM users WHERE id=?", (session["user_id"],)
+        ).fetchone()
+        if actor:
+            _audit(conn, actor, "Admin session expired due to inactivity",
+                   module="authentication")
+            conn.commit()
+        conn.close()
+        session.clear()
+        flash("Your administrator session expired. Please sign in again.", "info")
+        return redirect(url_for("login"))
+    session.permanent = True
+    session["admin_last_activity_at"] = now.isoformat(timespec="seconds")
+    return None
 app.config["MAX_CONTENT_LENGTH"] = MAX_FILE_SIZE + 1024
 
 
@@ -314,8 +356,15 @@ def current_user():
     conn = dbh.get_db()
     row = conn.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
     conn.close()
-    if row and (_user_value(row, "status", "active") != "active"
-                or int(_user_value(row, "is_archived", 0) or 0)):
+    invalid_session = bool(row and (
+        _user_value(row, "status", "active") != "active"
+        or int(_user_value(row, "is_archived", 0) or 0)
+        or session.get("role") != row["role"]
+        or (session.get("auth_version") is not None and
+            session.get("auth_version") != int(_user_value(row, "auth_version", 0) or 0))
+        or (row["role"] == "admin" and not _valid_admin_mfa_session(row))
+    ))
+    if invalid_session:
         session.clear()
         row = None
     g._current_user = row
@@ -476,6 +525,37 @@ def _user_value(user, key, default=None):
         return default
 
 
+def _admin_session_proof(user):
+    message = f"admin-credentials:{user['id']}:{user['password_hash']}:{user['email']}"
+    return hmac.new(app.secret_key.encode(), message.encode(), hashlib.sha256).hexdigest()
+
+
+def _valid_admin_mfa_session(user):
+    verified_at = _timestamp(session.get("admin_mfa_verified_at"))
+    proof = session.get("admin_mfa_proof", "")
+    return bool(
+        verified_at
+        and hmac.compare_digest(proof, _admin_session_proof(user))
+    )
+
+
+def _recent_admin_mfa(user):
+    if not _valid_admin_mfa_session(user):
+        return False
+    verified_at = _timestamp(session.get("admin_mfa_verified_at"))
+    if verified_at.tzinfo is None:
+        verified_at = verified_at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - verified_at < timedelta(minutes=ADMIN_REAUTH_MINUTES)
+
+
+def _require_recent_admin_mfa(user):
+    if not _recent_admin_mfa(user):
+        session.clear()
+        flash("For security, please sign in again and complete email verification before this action.", "error")
+        return redirect(url_for("login"))
+    return None
+
+
 def _audit(conn, actor, action, target=None, details=None, *, module=None, result="Success"):
     dbh.log_action(conn, actor, action, target, details, module=module, result=result,
                    ip_address=request.remote_addr if has_request_context() else None)
@@ -541,10 +621,7 @@ def valid_email(email):
 
 
 def valid_password(pw):
-    # Minimum length/complexity: >=8 chars, at least one letter and one digit
-    if not pw or len(pw) < 8:
-        return False
-    return bool(re.search(r"[A-Za-z]", pw)) and bool(re.search(r"\d", pw))
+    return _valid_password(pw)
 
 
 def _determine_file_kind(file_storage, ext=None):
@@ -944,7 +1021,7 @@ def register():
         if not valid_email(email):
             errors.append("Please enter a valid email address.")
         if not valid_password(password):
-            errors.append("Password must be at least 8 characters and include a letter and a number.")
+            errors.append(f"Password must be at least {MIN_PASSWORD_LENGTH} characters and include a letter and a number, and must not be common.")
         if password != confirm:
             errors.append("Passwords do not match.")
         if not address:
@@ -996,6 +1073,19 @@ def login():
         email = request.form.get("email", "").strip().lower()
         password = request.form.get("password", "")
         conn = dbh.get_db()
+        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None) -
+                  timedelta(minutes=dbh.LOGIN_RATE_WINDOW_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+        ip_failures = conn.execute(
+            "SELECT COUNT(*) AS n FROM audit_logs WHERE ip_address=? AND action='Failed login' "
+            "AND result='Failure' AND created_at>=?", (request.remote_addr, cutoff),
+        ).fetchone()["n"]
+        if ip_failures >= dbh.LOGIN_RATE_LIMIT:
+            _audit(conn, None, "Failed login", target=email or None,
+                   details="IP rate limit reached", module="authentication", result="Failure")
+            conn.commit()
+            conn.close()
+            flash("Sign-in is temporarily unavailable. Try again later.", "error")
+            return render_template("login.html"), 429
         user = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
 
         if not user or user["status"] != "active":
@@ -1004,7 +1094,7 @@ def login():
                    result="Failure")
             conn.commit()
             conn.close()
-            flash("Invalid credentials or inactive account.", "error")
+            flash("Invalid credentials or account unavailable.", "error")
             return render_template("login.html")
 
         if dbh.is_locked(user):
@@ -1012,19 +1102,19 @@ def login():
                    module="authentication", result="Failure")
             conn.commit()
             conn.close()
-            flash("This account is temporarily locked due to repeated failed attempts. Try again later.", "error")
+            flash("Invalid credentials or account unavailable.", "error")
             return render_template("login.html")
 
         if not check_password_hash(user["password_hash"], password):
             locked = dbh.register_failed_login(conn, user)
             _audit(conn, user, "Failed login", target=email, details="Invalid credentials",
                    module="authentication", result="Failure")
+            if locked:
+                _audit(conn, user, "Account locked after repeated login failures", target=email,
+                       module="authentication")
             conn.commit()
             conn.close()
-            if locked:
-                flash("Too many failed attempts. Account locked for 15 minutes.", "error")
-            else:
-                flash("Invalid credentials.", "error")
+            flash("Invalid credentials or account unavailable.", "error")
             return render_template("login.html")
 
         dbh.clear_failed_logins(conn, user["id"])
@@ -1036,6 +1126,7 @@ def login():
             return redirect(url_for("first_login_reset"))
         session["user_id"] = user["id"]
         session["role"] = user["role"]
+        session["auth_version"] = int(_user_value(user, "auth_version", 0) or 0)
         conn = dbh.get_db()
         _audit(conn, user, "Successful login", target=email, module="authentication")
         conn.commit()
@@ -1064,7 +1155,7 @@ def first_login_reset():
         password = request.form.get("password", "")
         confirm = request.form.get("confirm_password", "")
         if not valid_password(password):
-            flash("Password must be at least 8 characters and include a letter and a number.", "error")
+            flash(f"Password must be at least {MIN_PASSWORD_LENGTH} characters and include a letter and a number. Avoid common passwords.", "error")
             return render_template("first_login_reset.html")
         if password != confirm:
             flash("Passwords do not match.", "error")
@@ -1081,9 +1172,10 @@ def first_login_reset():
             conn.close()
             session.pop("pending_reset_user", None)
             return redirect(url_for("login"))
+        new_hash = generate_password_hash(password)
         conn.execute(
-            "UPDATE users SET password_hash=?, must_reset_pw=0 WHERE id=?",
-            (generate_password_hash(password), user_id),
+            "UPDATE users SET password_hash=?, must_reset_pw=0, auth_version=auth_version+1 WHERE id=?",
+            (new_hash, user_id),
         )
         dbh.log_action(conn, user, "Changed initial password on first login")
         _audit(conn, user, "Successful login", target=user["email"], module="authentication")
@@ -1092,6 +1184,17 @@ def first_login_reset():
         session.clear()
         session["user_id"] = user_id
         session["role"] = user["role"]
+        session["auth_version"] = int(_user_value(user, "auth_version", 0) or 0) + 1
+        if user["role"] == "admin":
+            session.permanent = True
+            now_utc = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+            session["admin_mfa_verified_at"] = now_utc
+            session["admin_mfa_proof"] = hmac.new(
+                app.secret_key.encode(),
+                f"admin-credentials:{user['id']}:{new_hash}:{user['email']}".encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            session["admin_last_activity_at"] = now_utc
         flash("Password set. Welcome to BarangayConnect.", "success")
         return redirect(url_for(f"{user['role']}_dashboard"))
     return render_template("first_login_reset.html")
@@ -1259,7 +1362,7 @@ def reset_password_code():
     password = request.form.get("password", "")
     confirm = request.form.get("confirm_password", "")
     if not valid_password(password):
-        flash("Password must be at least 8 characters and include a letter and a number.", "error")
+        flash(f"Password must be at least {MIN_PASSWORD_LENGTH} characters and include a letter and a number, and must not be common.", "error")
         remaining_ms = _password_reset_resend_remaining_ms()
         return render_template(
             "reset_password.html",
@@ -1319,7 +1422,7 @@ def reset_password_code():
         ), 400
 
     conn.execute(
-        "UPDATE users SET password_hash=?,must_reset_pw=0 WHERE id=?",
+        "UPDATE users SET password_hash=?,must_reset_pw=0,auth_version=auth_version+1 WHERE id=?",
         (generate_password_hash(password), user["id"]),
     )
     timestamp = now.isoformat(timespec="seconds")
@@ -1360,7 +1463,7 @@ def reset_password(token):
         confirm = request.form.get("confirm_password", "")
         if not valid_password(password):
             conn.close()
-            flash("Password must be at least 8 characters and include a letter and a number.", "error")
+            flash(f"Password must be at least {MIN_PASSWORD_LENGTH} characters and include a letter and a number, and must not be common.", "error")
             return render_template("reset_password.html", token_valid=True, token=token)
         if password != confirm:
             conn.close()
@@ -1382,7 +1485,7 @@ def reset_password(token):
             conn.close()
             return render_template("reset_password.html", token_valid=False), 400
         conn.execute(
-            "UPDATE users SET password_hash=?,must_reset_pw=0 WHERE id=?",
+            "UPDATE users SET password_hash=?,must_reset_pw=0,auth_version=auth_version+1 WHERE id=?",
             (generate_password_hash(password), row["user_id"]),
         )
         timestamp = datetime.now().isoformat(timespec="seconds")
@@ -2284,14 +2387,20 @@ def change_password(user):
         flash("Current password is incorrect.", "error")
         return redirect(url_for("profile"))
     if not valid_password(new_pw):
-        flash("New password must be at least 8 characters and include a letter and a number.", "error")
+        flash(f"New password must be at least {MIN_PASSWORD_LENGTH} characters and include a letter and a number, and must not be common.", "error")
         return redirect(url_for("profile"))
     if new_pw != confirm_pw:
         flash("New passwords do not match.", "error")
         return redirect(url_for("profile"))
 
     conn = dbh.get_db()
-    conn.execute("UPDATE users SET password_hash=? WHERE id=?", (generate_password_hash(new_pw), user["id"]))
+    conn.execute("UPDATE users SET password_hash=?,auth_version=auth_version+1 WHERE id=?",
+                 (generate_password_hash(new_pw), user["id"]))
+    session["auth_version"] = int(_user_value(user, "auth_version", 0) or 0) + 1
+    if user["role"] == "admin":
+        refreshed = conn.execute("SELECT * FROM users WHERE id=?", (user["id"],)).fetchone()
+        session["admin_mfa_proof"] = _admin_session_proof(refreshed)
+        session["admin_mfa_verified_at"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
     dbh.log_action(conn, user, "Changed own password")
     conn.commit()
     conn.close()
@@ -2813,7 +2922,7 @@ def create_resident(user):
         elif raw_contact and not contact:
             error = "Enter a valid Philippine mobile number."
         elif not valid_password(password):
-            error = "Password must be at least 8 characters and include a letter and a number."
+            error = f"Password must be at least {MIN_PASSWORD_LENGTH} characters and include a letter and a number, and must not be common."
         elif conn.execute("SELECT id FROM users WHERE lower(email)=?", (email,)).fetchone():
             error = "An account with this email already exists."
         if error:
@@ -2903,7 +3012,7 @@ def archive_resident(user, resident_id):
     if not resident:
         conn.close()
         abort(404)
-    conn.execute("UPDATE users SET is_archived=1,archived_at=datetime('now'),status='inactive' WHERE id=?",
+    conn.execute("UPDATE users SET is_archived=1,archived_at=datetime('now'),status='inactive',auth_version=auth_version+1 WHERE id=?",
                  (resident_id,))
     _audit(conn, user, "Archived resident account", target=resident["email"], module="accounts")
     conn.commit()
@@ -2920,7 +3029,7 @@ def restore_resident(user, resident_id):
     if not resident:
         conn.close()
         abort(404)
-    conn.execute("UPDATE users SET is_archived=0,archived_at=NULL WHERE id=?", (resident_id,))
+    conn.execute("UPDATE users SET is_archived=0,archived_at=NULL,auth_version=auth_version+1 WHERE id=?", (resident_id,))
     _audit(conn, user, "Restored resident account", target=resident["email"], module="accounts")
     conn.commit()
     conn.close()
@@ -3054,7 +3163,7 @@ def toggle_staff(user, staff_id):
         conn.close()
         abort(404)
     new_status = "inactive" if row["status"] == "active" else "active"
-    conn.execute("UPDATE users SET status=? WHERE id=?", (new_status, staff_id))
+    conn.execute("UPDATE users SET status=?,auth_version=auth_version+1 WHERE id=?", (new_status, staff_id))
     dbh.log_action(conn, user, f"Set staff account to {new_status}", target=row["email"])
     conn.commit()
     conn.close()
@@ -3071,7 +3180,7 @@ def toggle_resident(user, resident_id):
         conn.close()
         abort(404)
     new_status = "inactive" if row["status"] == "active" else "active"
-    conn.execute("UPDATE users SET status=? WHERE id=?", (new_status, resident_id))
+    conn.execute("UPDATE users SET status=?,auth_version=auth_version+1 WHERE id=?", (new_status, resident_id))
     dbh.log_action(conn, user, f"Set resident account to {new_status}", target=row["email"],
                    details="Marked inactive, e.g. moved away or requested closure" if new_status == "inactive" else None)
     conn.commit()
@@ -3090,7 +3199,7 @@ def reset_staff_password(user, staff_id):
         abort(404)
     temp_pw = dbh.gen_temp_password()
     conn.execute(
-        "UPDATE users SET password_hash=?, must_reset_pw=1 WHERE id=?",
+        "UPDATE users SET password_hash=?, must_reset_pw=1,auth_version=auth_version+1 WHERE id=?",
         (generate_password_hash(temp_pw), staff_id),
     )
     dbh.log_action(conn, user, "Reset staff password", target=row["email"])
@@ -3122,7 +3231,7 @@ def admin_administrators(user):
         elif raw_contact and not contact_number:
             flash("Enter a valid Philippine mobile number, such as 0917 123 4567.", "error")
         elif not valid_password(password):
-            flash("Password must be at least 8 characters and include a letter and a number.", "error")
+            flash(f"Password must be at least {MIN_PASSWORD_LENGTH} characters and include a letter and a number, and must not be common.", "error")
         elif conn.execute("SELECT id FROM users WHERE lower(email)=?", (email,)).fetchone():
             flash("An account with this email already exists.", "error")
         else:
@@ -3345,21 +3454,21 @@ def user_role_administration(user):
             if new_role not in allowed or (new_role == "staff" and office not in OFFICES):
                 conn.close()
                 abort(400)
-            conn.execute("UPDATE users SET role=?,office=?,position=? WHERE id=?",
+            conn.execute("UPDATE users SET role=?,office=?,position=?,auth_version=auth_version+1 WHERE id=?",
                          (new_role, office if new_role == "staff" else None,
                           OFFICES[office]["label"] if new_role == "staff" else None, account_id))
             action = "Changed user role"
             details = f"role={target['role']} -> {new_role}"
         elif operation == "status":
             new_status = "inactive" if target["status"] == "active" else "active"
-            conn.execute("UPDATE users SET status=? WHERE id=?", (new_status, account_id))
+            conn.execute("UPDATE users SET status=?,auth_version=auth_version+1 WHERE id=?", (new_status, account_id))
             action, details = "Changed account status", f"status={target['status']} -> {new_status}"
         elif operation == "archive" and not int(target.get("is_archived") or 0):
-            conn.execute("UPDATE users SET is_archived=1,archived_at=datetime('now'),status='inactive' WHERE id=?",
+            conn.execute("UPDATE users SET is_archived=1,archived_at=datetime('now'),status='inactive',auth_version=auth_version+1 WHERE id=?",
                          (account_id,))
             action, details = "Archived account", f"role={target['role']}"
         elif operation == "restore" and int(target.get("is_archived") or 0):
-            conn.execute("UPDATE users SET is_archived=0,archived_at=NULL WHERE id=?", (account_id,))
+            conn.execute("UPDATE users SET is_archived=0,archived_at=NULL,auth_version=auth_version+1 WHERE id=?", (account_id,))
             action, details = "Restored account", f"role={target['role']}"
         else:
             conn.close()
@@ -3403,14 +3512,101 @@ def user_role_administration(user):
 @app.route("/admin/settings/security")
 @login_required("admin")
 def security_settings(user):
+    founder = is_founding_admin(user)
+    term = request.args.get("q", "").strip()
+    event = request.args.get("event", "").strip()
+    result = request.args.get("result", "").strip()
+    start_date = request.args.get("start", "").strip()
+    end_date = request.args.get("end", "").strip()
+    for value in (start_date, end_date):
+        if value:
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError:
+                abort(400)
     conn = dbh.get_db()
+    allowed_events = {row["action"] for row in conn.execute(
+        "SELECT DISTINCT action FROM audit_logs WHERE module='authentication' ORDER BY action"
+    ).fetchall()}
     admins = conn.execute("SELECT COUNT(*) count FROM users WHERE role='admin' AND status='active' AND is_archived=0").fetchone()["count"]
-    locked = conn.execute("SELECT COUNT(*) count FROM users WHERE locked_until IS NOT NULL AND status='active'").fetchone()["count"]
+    visibility = "role IN ('resident','staff')" if not founder else "role IN ('resident','staff','admin')"
+    founder_clause = " AND NOT (role='admin' AND (is_founding_admin=1 OR (lower(email)=? AND is_super_admin=1)))" if founder else ""
+    locked_params = [datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")]
+    if founder:
+        locked_params.append(FOUNDING_ADMIN_EMAIL)
+    locked_rows = conn.execute(
+        "SELECT id,full_name,email,role,locked_until FROM users WHERE " + visibility +
+        " AND locked_until IS NOT NULL AND locked_until>? AND status='active' AND is_archived=0 " +
+        founder_clause + " ORDER BY locked_until", locked_params,
+    ).fetchall()
+    clauses = ["module='authentication'"]
+    params = []
+    if event in allowed_events:
+        clauses.append("action=?")
+        params.append(event)
+    if result in {"Success", "Failure"}:
+        clauses.append("result=?")
+        params.append(result)
+    if start_date:
+        clauses.append("created_at>=?")
+        params.append(start_date + " 00:00:00")
+    if end_date:
+        clauses.append("created_at<?")
+        params.append((datetime.strptime(end_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00"))
+    if term:
+        clauses.append("(actor_name LIKE ? OR target LIKE ? OR action LIKE ? OR ip_address LIKE ?)")
+        params.extend([f"%{term}%"] * 4)
+    events = conn.execute(
+        "SELECT actor_name,actor_role,action,target,result,ip_address,created_at FROM audit_logs WHERE " +
+        " AND ".join(clauses) + " ORDER BY id DESC LIMIT 50", params,
+    ).fetchall()
     conn.close()
-    return render_template("admin/security_settings.html", founder=is_founding_admin(user),
-                           active_admins=admins, locked_accounts=locked,
+    return render_template("admin/security_settings.html", founder=founder,
+                           active_admins=admins, locked_accounts=len(locked_rows), locked_rows=locked_rows,
                            max_failed_logins=dbh.MAX_FAILED_LOGINS,
-                           lockout_minutes=dbh.LOCKOUT_MINUTES)
+                           lockout_minutes=dbh.LOCKOUT_MINUTES,
+                           login_rate_limit=dbh.LOGIN_RATE_LIMIT,
+                           login_rate_window=dbh.LOGIN_RATE_WINDOW_MINUTES,
+                           session_idle_minutes=ADMIN_SESSION_IDLE_MINUTES,
+                           min_password_length=MIN_PASSWORD_LENGTH,
+                           max_password_length=MAX_PASSWORD_LENGTH,
+                           otp_ttl=ADMIN_OTP_TTL_MINUTES, otp_attempts=ADMIN_OTP_MAX_ATTEMPTS,
+                           otp_sends=ADMIN_OTP_MAX_SENDS_PER_HOUR,
+                           otp_resend_seconds=ADMIN_OTP_RESEND_DELAY_SECONDS,
+                           unlock_csrf=session.setdefault("security_unlock_csrf", secrets.token_urlsafe(32)),
+                           events=events, event_types=sorted(allowed_events),
+                           filters={"q": term, "event": event, "result": result,
+                                    "start": start_date, "end": end_date})
+
+
+@app.route("/admin/settings/security/unlock/<int:account_id>", methods=["POST"])
+@login_required("admin")
+def unlock_security_account(user, account_id):
+    recent_check = _require_recent_admin_mfa(user)
+    if recent_check:
+        return recent_check
+    expected = session.get("security_unlock_csrf", "")
+    supplied = request.form.get("csrf_token", "")
+    if not expected or not hmac.compare_digest(expected.encode(), supplied.encode()):
+        abort(400)
+    founder = is_founding_admin(user)
+    conn = dbh.get_db()
+    target = conn.execute("SELECT * FROM users WHERE id=?", (account_id,)).fetchone()
+    if (not target or target["role"] not in ({"resident", "staff", "admin"} if founder else {"resident", "staff"})
+            or is_founding_admin(target)):
+        conn.close()
+        abort(404 if not target else 403)
+    if not dbh.is_locked(target):
+        conn.close()
+        abort(404)
+    conn.execute("UPDATE users SET failed_logins=0,locked_until=NULL,auth_version=auth_version+1 WHERE id=?",
+                 (account_id,))
+    _audit(conn, user, "Account unlocked by administrator", target=target["email"],
+           details=f"role={target['role']}", module="authentication")
+    conn.commit()
+    conn.close()
+    flash("Account unlocked. The user can sign in again.", "success")
+    return redirect(url_for("security_settings"))
 
 
 @app.route("/admin/settings/backups")

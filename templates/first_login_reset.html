@@ -12,8 +12,8 @@
     <form method="POST" class="form-grid">
       <div class="form-row">
         <label>New password</label>
-        <input type="password" name="password" required>
-        <span class="hint">Min. 8 characters, with a letter and a number.</span>
+        <input type="password" name="password" minlength="12" maxlength="256" required>
+        <span class="hint">12–256 characters, with a letter and a number. Common passwords are blocked.</span>
       </div>
       <div class="form-row">
         <label>Confirm new password</label>

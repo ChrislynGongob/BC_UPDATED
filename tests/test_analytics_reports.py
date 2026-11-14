@@ -16,6 +16,7 @@ import db as dbh  # noqa: E402
 _boot_dir = tempfile.mkdtemp()
 dbh.DB_PATH = os.path.join(_boot_dir, "boot.db")
 import app as A  # noqa: E402
+from tests.session_helpers import authenticate
 
 
 class AnalyticsReportTests(unittest.TestCase):
@@ -87,11 +88,7 @@ class AnalyticsReportTests(unittest.TestCase):
         A._db_ready = cls._old_ready
 
     def client_as(self, user_id, role):
-        client = A.app.test_client()
-        with client.session_transaction() as session:
-            session["user_id"] = user_id
-            session["role"] = role
-        return client
+        return authenticate(A.app.test_client(), user_id)
 
     def add_complaint(self, reference, category, created_at, status="Pending", description="Private complaint details"):
         conn = dbh.get_db()

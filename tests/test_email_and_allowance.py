@@ -19,6 +19,7 @@ import db as dbh  # noqa: E402
 _boot_dir = tempfile.mkdtemp()
 dbh.DB_PATH = os.path.join(_boot_dir, "boot.db")
 import app as A  # noqa: E402
+from tests.session_helpers import authenticate
 
 
 class SecurityAndAllowanceTests(unittest.TestCase):
@@ -91,11 +92,7 @@ class SecurityAndAllowanceTests(unittest.TestCase):
         return client
 
     def admin_client(self):
-        client = A.app.test_client()
-        with client.session_transaction() as session:
-            session["user_id"] = 1
-            session["role"] = "admin"
-        return client
+        return authenticate(A.app.test_client(), 1)
 
     def test_smtp_service_uses_configured_tls_auth_and_message(self):
         config = {
@@ -420,19 +417,19 @@ class SecurityAndAllowanceTests(unittest.TestCase):
         self.assertEqual(client.get("/reset-password").status_code, 200)
         mismatch = client.post(
             "/reset-password",
-            data={"email": email, "code": code, "password": "Updated@123", "confirm_password": "Different@123"},
+            data={"email": email, "code": code, "password": "UpdatedPassword@123", "confirm_password": "DifferentPassword@123"},
         )
         self.assertEqual(mismatch.status_code, 200)
         self.assertIn("Passwords do not match", mismatch.get_data(as_text=True))
         response = client.post(
             "/reset-password",
-            data={"email": email, "code": code, "password": "Updated@123", "confirm_password": "Updated@123"},
+            data={"email": email, "code": code, "password": "UpdatedPassword@123", "confirm_password": "UpdatedPassword@123"},
         )
         self.assertEqual(response.status_code, 302)
         conn = dbh.get_db()
         account = conn.execute("SELECT password_hash,must_reset_pw FROM users WHERE id=?", (resident_id,)).fetchone()
         password_hash = account["password_hash"]
-        self.assertTrue(check_password_hash(password_hash, "Updated@123"))
+        self.assertTrue(check_password_hash(password_hash, "UpdatedPassword@123"))
         self.assertFalse(check_password_hash(password_hash, "Resident@1234"))
         self.assertEqual(account["must_reset_pw"], 0)
         self.assertIsNotNone(conn.execute(
@@ -442,7 +439,7 @@ class SecurityAndAllowanceTests(unittest.TestCase):
         conn.close()
         reused = client.post(
             "/reset-password",
-            data={"email": email, "code": code, "password": "Updated@456", "confirm_password": "Updated@456"},
+            data={"email": email, "code": code, "password": "UpdatedPassword@456", "confirm_password": "UpdatedPassword@456"},
         )
         self.assertEqual(reused.status_code, 400)
         with patch.object(A.email_service, "send_email") as send_email:
@@ -452,7 +449,7 @@ class SecurityAndAllowanceTests(unittest.TestCase):
             self.assertEqual(old_password.status_code, 200)
             self.assertEqual(send_email.call_count, 0)
             new_password = client.post(
-                "/login", data={"email": email, "password": "Updated@123"}
+                "/login", data={"email": email, "password": "UpdatedPassword@123"}
             )
             self.assertEqual(new_password.location, "/dashboard")
             self.assertEqual(send_email.call_count, 0)
@@ -757,8 +754,8 @@ class SecurityAndAllowanceTests(unittest.TestCase):
             data={
                 "email": email,
                 "code": wrong_code,
-                "password": "Updated@123",
-                "confirm_password": "Updated@123",
+                "password": "UpdatedPassword@123",
+                "confirm_password": "UpdatedPassword@123",
             },
         )
         self.assertEqual(invalid.status_code, 400)
@@ -774,8 +771,8 @@ class SecurityAndAllowanceTests(unittest.TestCase):
             data={
                 "email": email,
                 "code": code,
-                "password": "Updated@123",
-                "confirm_password": "Updated@123",
+                "password": "UpdatedPassword@123",
+                "confirm_password": "UpdatedPassword@123",
             },
         )
         self.assertEqual(expired.status_code, 400)

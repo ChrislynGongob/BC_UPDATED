@@ -16,8 +16,8 @@
       <input type="tel" name="contact_number" placeholder="0917 123 4567">
     </div>
     <div class="form-row"><label>Recovery email</label><input type="email" name="recovery_email" required></div>
-    <div class="form-row"><label>Password</label><input type="password" name="password" required>
-      <span class="hint">Min. 8 characters, with a letter and a number.</span>
+    <div class="form-row"><label>Password</label><input type="password" name="password" minlength="12" maxlength="256" required>
+      <span class="hint">12–256 characters, with a letter and a number. Common passwords are blocked.</span>
     </div>
     <button class="btn btn-primary" type="submit">Create Administrator</button>
   </form>

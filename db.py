@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote, urlsplit
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -540,6 +540,8 @@ def migrate_db():
         conn.execute("ALTER TABLE users ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0")
     if "archived_at" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN archived_at TEXT")
+    if "auth_version" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0")
     if "failed_logins" not in user_cols:
         conn.execute(
             "ALTER TABLE users ADD COLUMN failed_logins INTEGER NOT NULL DEFAULT 0"
@@ -558,6 +560,8 @@ def migrate_db():
             conn.execute(f"ALTER TABLE audit_logs ADD COLUMN {column} {definition}")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_ip_action_created "
+                 "ON audit_logs(ip_address, action, created_at)")
     if "contact_number" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN contact_number TEXT")
     user_cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
@@ -779,7 +783,7 @@ def gen_reference(prefix):
     return f"{prefix}-{year}-{suffix}"
 
 
-def gen_temp_password(length=10):
+def gen_temp_password(length=18):
     chars = string.ascii_letters + string.digits
     return "".join(random.choices(chars, k=length))
 
@@ -830,13 +834,16 @@ def notify(conn, user_id, message, link=None):
 
 MAX_FAILED_LOGINS = 5
 LOCKOUT_MINUTES = 15
+LOGIN_RATE_LIMIT = 30
+LOGIN_RATE_WINDOW_MINUTES = 15
 
 
 def is_locked(user_row):
     if not user_row["locked_until"]:
         return False
     try:
-        return datetime.strptime(user_row["locked_until"], "%Y-%m-%d %H:%M:%S") > datetime.now()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        return datetime.strptime(user_row["locked_until"], "%Y-%m-%d %H:%M:%S") > now
     except ValueError:
         return False
 
@@ -845,7 +852,7 @@ def register_failed_login(conn, user_row):
     fails = user_row["failed_logins"] + 1
     locked_until = None
     if fails >= MAX_FAILED_LOGINS:
-        locked_until = (datetime.now() + timedelta(minutes=LOCKOUT_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
+        locked_until = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=LOCKOUT_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
         fails = 0
     conn.execute(
         "UPDATE users SET failed_logins=?, locked_until=? WHERE id=?",

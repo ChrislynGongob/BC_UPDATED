@@ -22,6 +22,7 @@ _boot_dir = tempfile.mkdtemp()
 dbh.DB_PATH = os.path.join(_boot_dir, "boot.db")
 import app as A  # noqa: E402
 import seed  # noqa: E402
+from tests.session_helpers import authenticate
 
 STAFF_PW = "Staff@1234"
 
@@ -41,11 +42,7 @@ def client_for(email, password):
 
 
 def admin_client():
-    c = A.app.test_client()
-    with c.session_transaction() as s:
-        s["user_id"] = 1
-        s["role"] = "admin"
-    return c
+    return authenticate(A.app.test_client(), 1)
 
 
 class FeatureTestBase(unittest.TestCase):
@@ -91,10 +88,7 @@ class BackupTests(FeatureTestBase):
         conn.close()
 
     def founder_client(self):
-        client = A.app.test_client()
-        with client.session_transaction() as state:
-            state.update(user_id=self.founder_id, role="admin")
-        return client
+        return authenticate(A.app.test_client(), self.founder_id)
 
     def test_admin_can_download_a_valid_backup(self):
         r = self.founder_client().post("/admin/settings/backup")

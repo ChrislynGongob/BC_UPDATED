@@ -12,6 +12,12 @@ from datetime import datetime, timedelta, timezone
 
 from flask import abort, flash, redirect, render_template, request, session, url_for
 
+ADMIN_PENDING_MFA_MINUTES = 15
+ADMIN_OTP_TTL_MINUTES = 5
+ADMIN_OTP_MAX_ATTEMPTS = 5
+ADMIN_OTP_MAX_SENDS_PER_HOUR = 5
+ADMIN_OTP_RESEND_DELAY_SECONDS = 60
+
 
 def _utc_now():
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -33,7 +39,7 @@ def register_admin_mfa(app, dbh, email_service):
         if not isinstance(pending, dict):
             return None
         started = timestamp(pending.get("started_at"))
-        if not started or _utc_now() >= started + timedelta(minutes=15):
+        if not started or _utc_now() >= started + timedelta(minutes=ADMIN_PENDING_MFA_MINUTES):
             session.pop("pending_mfa_user", None)
             return None
         user = conn.execute(
@@ -58,8 +64,8 @@ def register_admin_mfa(app, dbh, email_service):
         sends = 0 if fresh else row["sends_in_window"]
         attempts = 0 if fresh else row["attempts"]
         sent = timestamp(row["sent_at"]) if row else None
-        wait = max(0, math.ceil((sent + timedelta(seconds=60) - now).total_seconds())) if sent else 0
-        if sends >= 5 or attempts >= 5:
+        wait = max(0, math.ceil((sent + timedelta(seconds=ADMIN_OTP_RESEND_DELAY_SECONDS) - now).total_seconds())) if sent else 0
+        if sends >= ADMIN_OTP_MAX_SENDS_PER_HOUR or attempts >= ADMIN_OTP_MAX_ATTEMPTS:
             return None, "Too many verification requests or attempts. Try again after the one-hour limit resets."
         if wait:
             return None, f"Please wait {wait} seconds before requesting another code."
@@ -71,7 +77,7 @@ def register_admin_mfa(app, dbh, email_service):
             "email_otp_hash=excluded.email_otp_hash,mode=excluded.mode,expires_at=excluded.expires_at,"
             "sent_at=excluded.sent_at,attempts=excluded.attempts,window_started_at=excluded.window_started_at,"
             "sends_in_window=excluded.sends_in_window,used_at=NULL",
-            (user["id"], otp_digest(user, nonce, code), (now + timedelta(minutes=5)).isoformat(),
+            (user["id"], otp_digest(user, nonce, code), (now + timedelta(minutes=ADMIN_OTP_TTL_MINUTES)).isoformat(),
              now.isoformat(), attempts, (now if fresh else window).isoformat(), sends + 1),
         )
         return code, None
@@ -80,7 +86,7 @@ def register_admin_mfa(app, dbh, email_service):
         try:
             email_service.send_email(
                 user["email"], "Your BarangayConnect admin verification code",
-                f"Your admin login code is {code}.\n\nThis code expires in 5 minutes and can only be used once."
+                f"Your admin login code is {code}.\n\nThis code expires in {ADMIN_OTP_TTL_MINUTES} minutes and can only be used once."
                 "\n\nIf you did not request this code, secure your account password.",
             )
         except (email_service.EmailConfigurationError, email_service.smtplib.SMTPException, OSError, ValueError):
@@ -95,7 +101,7 @@ def register_admin_mfa(app, dbh, email_service):
                 conn.commit()
             finally:
                 conn.close()
-            flash("The verification email could not be sent. Try resending after 60 seconds.", "error")
+            flash(f"The verification email could not be sent. Try resending after {ADMIN_OTP_RESEND_DELAY_SECONDS} seconds.", "error")
             return
         flash("A verification code was sent to your registered email address.", "info")
 
@@ -146,7 +152,7 @@ def register_admin_mfa(app, dbh, email_service):
                 code = request.form.get("otp", "").strip()
                 now = _utc_now()
                 usable = bool(row and row["email_otp_hash"] and not row["used_at"]
-                              and row["attempts"] < 5 and timestamp(row["expires_at"])
+                              and row["attempts"] < ADMIN_OTP_MAX_ATTEMPTS and timestamp(row["expires_at"])
                               and now < timestamp(row["expires_at"]))
                 valid = (usable and re.fullmatch(r"[0-9]{6}", code) and hmac.compare_digest(
                     otp_digest(user, session["pending_mfa_user"]["nonce"], code), row["email_otp_hash"]))
@@ -168,6 +174,9 @@ def register_admin_mfa(app, dbh, email_service):
                         return redirect(url_for("first_login_reset"))
                     session["user_id"] = user["id"]
                     session["role"] = user["role"]
+                    session["auth_version"] = int(user["auth_version"] or 0)
+                    session.permanent = True
+                    session["admin_last_activity_at"] = now.isoformat()
                     session["admin_mfa_verified_at"] = now.isoformat()
                     session["admin_mfa_proof"] = digest(
                         f"admin-credentials:{user['id']}:{user['password_hash']}:{user['email']}"
@@ -182,10 +191,10 @@ def register_admin_mfa(app, dbh, email_service):
                                module="authentication", result="Failure",
                                ip_address=request.remote_addr)
                 conn.commit()
-                flash("The verification code is invalid, expired, used, or has reached the five-attempt limit.", "error")
+                flash(f"The verification code is invalid, expired, used, or has reached the {ADMIN_OTP_MAX_ATTEMPTS}-attempt limit.", "error")
                 status = 400
             sent = timestamp(row["sent_at"]) if row else None
-            wait = max(0, math.ceil((sent + timedelta(seconds=60) - _utc_now()).total_seconds())) if sent else 0
+            wait = max(0, math.ceil((sent + timedelta(seconds=ADMIN_OTP_RESEND_DELAY_SECONDS) - _utc_now()).total_seconds())) if sent else 0
             return render_template("verify_otp.html", resend_wait=wait, csrf_token=session["mfa_csrf"]), status
         finally:
             conn.close()
@@ -206,7 +215,7 @@ def register_admin_mfa(app, dbh, email_service):
             conn.close()
         if error:
             flash(error, "error")
-            return render_template("verify_otp.html", resend_wait=60, csrf_token=session["mfa_csrf"]), 429
+            return render_template("verify_otp.html", resend_wait=ADMIN_OTP_RESEND_DELAY_SECONDS, csrf_token=session["mfa_csrf"]), 429
         deliver(user, nonce, code)
         return redirect(url_for("verify_otp"))
 
@@ -215,7 +224,7 @@ def register_admin_mfa(app, dbh, email_service):
             return True
         proof = session.get("admin_reset_mfa", {})
         verified = timestamp(proof.get("verified_at"))
-        return bool(verified and _utc_now() < verified + timedelta(minutes=15)
+        return bool(verified and _utc_now() < verified + timedelta(minutes=ADMIN_PENDING_MFA_MINUTES)
                     and hmac.compare_digest(proof.get("proof", ""),
                         digest(f"admin-reset:{user['id']}:{user['password_hash']}")))
 

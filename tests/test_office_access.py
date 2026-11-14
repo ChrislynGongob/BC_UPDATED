@@ -26,6 +26,7 @@ dbh.DB_PATH = os.path.join(_tmpdir, "test.db")
 
 import app as A  # noqa: E402
 import seed  # noqa: E402
+from tests.session_helpers import authenticate
 
 STAFF_PW = "Staff@1234"
 OFFICES = {  # office -> (email, request types it may handle, may handle complaints)
@@ -48,11 +49,7 @@ def login(client, email, password):
 
 
 def admin_client():
-    c = A.app.test_client()
-    with c.session_transaction() as s:
-        s["user_id"] = 1
-        s["role"] = "admin"
-    return c
+    return authenticate(A.app.test_client(), 1)
 
 
 class OfficeAccessTests(unittest.TestCase):
@@ -219,10 +216,7 @@ class OfficeAccessTests(unittest.TestCase):
         conn.close()
 
         for user in users:
-            client = A.app.test_client()
-            with client.session_transaction() as session:
-                session["user_id"] = user["id"]
-                session["role"] = user["role"]
+            client = authenticate(A.app.test_client(), user["id"])
 
             response = client.get("/search")
             html = response.get_data(as_text=True)
