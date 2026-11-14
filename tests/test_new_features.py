@@ -666,7 +666,7 @@ class StaffWorkloadTests(FeatureTestBase):
                 "SELECT COUNT(*) c FROM complaints WHERE assigned_staff_id=? "
                 "AND status NOT IN ('Resolved','Closed','Rejected')", (staff_id,)
             ).fetchone()["c"]
-            html = admin_client().get("/admin/staff").get_data(as_text=True)
+            html = admin_client().get("/admin/settings/users?role=staff&status=all").get_data(as_text=True)
             self.assertIn("Workload", html)
             self.assertIn(
                 f"{request_count} requests · {complaint_count} complaints", html

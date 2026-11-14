@@ -1,44 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Settings — BarangayConnect{% endblock %}
-{% block page_title %}Settings{% endblock %}
+{% block title %}Barangay Information — BarangayConnect{% endblock %}
+{% block page_title %}Barangay Information{% endblock %}
 {% block content %}
-<div class="card"><h2>System Settings</h2><p class="muted">Manage account roles, administrator access, backup operations, and authentication security.</p><div class="actions-row"><a class="btn btn-outline" href="{{ url_for('user_role_administration') }}">User Role Administration</a><a class="btn btn-outline" href="{{ url_for('admin_staff') }}">Manage Staff</a><a class="btn btn-outline" href="{{ url_for('security_settings') }}">Security Settings</a>{% if is_founding_admin_user %}<a class="btn btn-outline" href="{{ url_for('admin_administrators') }}">Manage Administrators</a><a class="btn btn-outline" href="{{ url_for('backup_management') }}">Database Backup &amp; Restore</a>{% endif %}</div></div>
-<div class="admin-settings-grid">
 <div class="card admin-settings-card">
-  <h3>Barangay Information</h3>
+  <h2>Barangay Information</h2>
   <p class="muted">These details appear on the resident-facing Emergency Hotlines page.</p>
   <form method="POST" class="form-grid admin-settings-form">
     {% for key, label in fields %}
     <div class="form-row">
-      <label>{{ label }}</label>
-      <input type="text" name="{{ key }}" value="{{ values.get(key, '') }}">
+      <label for="setting-{{ key }}">{{ label }}</label>
+      <input id="setting-{{ key }}" type="text" name="{{ key }}" value="{{ values.get(key, '') }}">
     </div>
     {% endfor %}
     <button class="btn btn-primary" type="submit">Save Settings</button>
   </form>
-</div>
-
-{% if is_founding_admin_user %}<div class="card admin-settings-card">
-  <h3>Database Backup</h3>
-  <form method="POST" action="{{ url_for('create_backup') }}">
-    <button class="btn btn-primary" type="submit">Back up now &amp; download</button>
-  </form>
-  {% if backups %}
-  <div class="table-wrap" style="margin-top:14px;"><table>
-    <tr><th>Backup</th><th>Created</th><th>Size</th><th></th></tr>
-    {% for b in backups %}
-    <tr>
-      <td class="ref-code">{{ b.name }}</td>
-      <td class="muted">{{ b.created }}</td>
-      <td class="muted">{{ b.size_kb }} KB</td>
-      <td><a class="btn btn-outline btn-sm" href="{{ url_for('download_backup', name=b.name) }}">Download</a></td>
-    </tr>
-    {% endfor %}
-  </table></div>
-  {% else %}
-  <p class="hint" style="margin-top:10px;">No backups yet.</p>
-  {% endif %}
-</div>
-{% endif %}
 </div>
 {% endblock %}

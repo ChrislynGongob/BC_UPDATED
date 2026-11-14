@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Staff Account — BarangayConnect{% endblock %}
+{% block page_title %}Staff Account{% endblock %}
+{% block content %}
+<div class="card" style="max-width:720px">
+  <h2>{{ account.full_name }}</h2>
+  <dl class="um-detail-list">
+    <dt>Email</dt><dd>{{ account.email }}</dd>
+    <dt>Mobile number</dt><dd>{{ account.contact_number or 'Not provided' }}</dd>
+    <dt>Office</dt><dd>{{ offices[account.office].label if account.office in offices else account.office or 'Not assigned' }}</dd>
+    <dt>Role</dt><dd>Staff</dd>
+    <dt>Status</dt><dd>{{ 'Archived' if account.is_archived|int else account.status|title }}</dd>
+    <dt>Registered</dt><dd>{{ account.created_at or '—' }}</dd>
+  </dl>
+  <div class="actions-row">
+    <a class="btn btn-primary" href="{{ url_for('edit_staff_account', staff_id=account.id) }}">Edit</a>
+    <a class="btn btn-outline" href="{{ url_for('user_role_administration', role='staff', status='all') }}">Back to User Management</a>
+  </div>
+</div>
+{% endblock %}

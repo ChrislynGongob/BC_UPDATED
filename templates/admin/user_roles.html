@@ -1,32 +1,208 @@
 {% extends "base.html" %}
-{% block title %}User Role Administration — BarangayConnect{% endblock %}
-{% block page_title %}User Role Administration{% endblock %}
+{% block title %}User Management — BarangayConnect{% endblock %}
+{% block page_title %}User Management{% endblock %}
 {% block content %}
-<div class="card">
-  <div class="actions-row" style="margin-bottom:14px"><a class="btn btn-primary btn-sm" href="{{ url_for('create_resident') }}">Add Resident</a><a class="btn btn-outline btn-sm" href="{{ url_for('admin_staff') }}">Manage Staff Accounts</a>{% if founder %}<a class="btn btn-outline btn-sm" href="{{ url_for('admin_administrators') }}">Manage Administrators</a>{% endif %}</div>
-  <div class="actions-row" style="margin-bottom:14px"><a class="btn btn-primary btn-sm" href="{{ url_for('create_resident') }}">Add Resident</a><a class="btn btn-outline btn-sm" href="{{ url_for('admin_staff') }}">Manage Staff Accounts</a>{% if founder %}<a class="btn btn-outline btn-sm" href="{{ url_for('admin_administrators') }}">Manage Administrators</a>{% endif %}</div>
-  <form method="GET" class="filter-form"><div class="filter-grid">
-    <input name="q" value="{{ q }}" placeholder="Search name or email" aria-label="Search users">
-    <select name="role" aria-label="Role"><option value="">All roles</option>{% for item in ['resident','staff','admin'] %}<option value="{{ item }}" {{ 'selected' if selected_role==item }}>{{ item|title }}</option>{% endfor %}</select>
-    <select name="status" aria-label="Account status"><option value="active" {{ 'selected' if selected_status=='active' }}>Active</option><option value="inactive" {{ 'selected' if selected_status=='inactive' }}>Inactive</option><option value="archived" {{ 'selected' if selected_status=='archived' }}>Archived</option><option value="all" {{ 'selected' if selected_status=='all' }}>All status</option></select>
-    <button class="btn btn-primary btn-sm">Search</button>
-  </div></form>
-  {% if rows %}<div class="table-wrap"><table>
-    <tr><th>User</th><th>Role</th><th>Office</th><th>Status</th><th>Created</th><th>Actions</th></tr>
-    {% for u in rows %}<tr>
-      <td>{{ u.full_name }}<div class="muted">{{ u.email }}</div></td>
-      <td>{{ 'Founding Admin' if u.is_founding_admin|int else u.role|title }}</td><td>{{ offices[u.office].label if u.office in offices else '—' }}</td>
-      <td>{{ 'Archived' if u.is_archived|int else u.status|title }}</td><td class="muted">{{ u.created_at }}</td>
-      <td class="actions-row">
-        {% if not u.is_founding_admin|int and (u.role != 'admin' or founder) %}
-          {% if not u.is_archived|int %}
-            <form method="POST" onsubmit="return confirm('Change this account status?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="status"><button class="btn btn-outline btn-sm" type="submit">{{ 'Deactivate' if u.status=='active' else 'Activate' }}</button></form>
-            <form method="POST" onsubmit="return confirm('Archive this account and retain its history?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button class="btn btn-outline btn-sm" type="submit">Archive</button></form>
-          {% else %}<form method="POST" onsubmit="return confirm('Restore this account?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button class="btn btn-outline btn-sm" type="submit">Restore</button></form>{% endif %}
-          {% if founder %}<form method="POST" class="actions-row"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="role"><label class="sr-only" for="role-{{ u.id }}">Role for {{ u.full_name }}</label><select id="role-{{ u.id }}" name="role">{% for item in ['resident','staff','admin'] %}<option value="{{ item }}" {{ 'selected' if u.role==item }}>{{ item|title }}</option>{% endfor %}</select><select name="office" aria-label="Staff office">{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office==key }}>{{ cfg.label }}</option>{% endfor %}</select><button class="btn btn-outline btn-sm" type="submit">Change role</button></form>{% endif %}
-        {% endif %}
-      </td>
-    </tr>{% endfor %}
-  </table></div>{% else %}<div class="empty-state">No matching accounts.</div>{% endif %}
-</div>
+<section class="um-page" aria-labelledby="um-title">
+  <header class="um-header">
+    <a class="um-back" href="{{ url_for('admin_dashboard') }}" id="um-back" aria-label="Go Back" title="Go Back">
+      <span aria-hidden="true">←</span><span class="sr-only">Go Back</span>
+    </a>
+    <div class="um-heading-icon" aria-hidden="true">♙</div>
+    <div class="um-heading-copy">
+      <h1 id="um-title">User Management</h1>
+      <p>Manage existing user accounts, roles, access permissions, and account status.</p>
+    </div>
+  </header>
+
+  <div class="um-tabs" role="tablist" aria-label="User categories">
+    <a role="tab" aria-selected="{{ 'true' if not selected_role and selected_status != 'archived' else 'false' }}"
+       class="{{ 'active' if not selected_role and selected_status != 'archived' }}"
+       href="{{ url_for('user_role_administration', status='all', q=q or None) }}"><span aria-hidden="true">♙</span> All Users <b>{{ tab_counts.all }}</b></a>
+    {% if founder %}<a role="tab" aria-selected="{{ 'true' if selected_role == 'admin' else 'false' }}"
+       class="{{ 'active' if selected_role == 'admin' }}"
+       href="{{ url_for('user_role_administration', role='admin', status='all', q=q or None) }}"><span aria-hidden="true">♢</span> Administrators <b>{{ tab_counts.admin }}</b></a>{% endif %}
+    <a role="tab" aria-selected="{{ 'true' if selected_role == 'staff' else 'false' }}"
+       class="{{ 'active' if selected_role == 'staff' }}"
+       href="{{ url_for('user_role_administration', role='staff', status='all', q=q or None) }}"><span aria-hidden="true">▣</span> Staff <b>{{ tab_counts.staff }}</b></a>
+    <a role="tab" aria-selected="{{ 'true' if selected_role == 'resident' else 'false' }}"
+       class="{{ 'active' if selected_role == 'resident' }}"
+       href="{{ url_for('user_role_administration', role='resident', status='all', q=q or None) }}"><span aria-hidden="true">♧</span> Residents <b>{{ tab_counts.resident }}</b></a>
+    <a role="tab" aria-selected="{{ 'true' if selected_status == 'archived' else 'false' }}"
+       class="{{ 'active' if selected_status == 'archived' }}"
+       href="{{ url_for('user_role_administration', status='archived', q=q or None) }}"><span aria-hidden="true">▣</span> Archived <b>{{ counts.archived }}</b></a>
+  </div>
+
+  {% if selected_role == 'staff' %}
+  <section class="um-staff-management" aria-labelledby="um-staff-title">
+    <div class="um-staff-section-heading"><div><h2 id="um-staff-title">Staff Management</h2><p>Create staff accounts, manage office assignments, and review active workload.</p></div></div>
+
+    <article class="um-staff-panel um-staff-create">
+      <div class="um-staff-panel-heading"><h3>Create Staff Account</h3><p>New staff receive a temporary password and must change it at first sign-in.</p></div>
+      <form method="POST" action="{{ url_for('admin_staff') }}" class="um-staff-create-form">
+        <label>Full Name<input type="text" name="full_name" maxlength="120" required></label>
+        <label>Email<input type="email" name="email" required></label>
+        <label>Philippine Mobile Number <span class="um-optional">(optional)</span><input type="tel" name="contact_number" placeholder="0917 123 4567"></label>
+        <label>Assigned Office<select name="office" required><option value="">Select an office</option>{% for key,cfg in offices.items() %}<option value="{{ key }}">{{ cfg.label }}</option>{% endfor %}</select></label>
+        <button class="btn btn-primary" type="submit">Create Staff Account</button>
+      </form>
+    </article>
+
+    <article class="um-staff-panel">
+      <div class="um-staff-panel-heading"><h3>Office Coverage</h3><p>Active staff assigned to each service office.</p></div>
+      <div class="um-office-grid">
+        {% for key,cfg in offices.items() %}
+          {% set services = cfg.requests + (['Complaints'] if cfg.complaints else []) %}
+          <div class="um-office-card" data-office="{{ key }}" data-active-staff="{{ coverage.get(key, 0) }}"><span class="um-office-icon" aria-hidden="true">{{ '◈' if key == 'bpso' else '▣' }}</span><div><strong>{{ cfg.label }}</strong><span>{{ services|join(' · ') }}</span></div><b>{{ coverage.get(key, 0) }}</b><small>active</small></div>
+        {% endfor %}
+      </div>
+    </article>
+
+    <article class="um-staff-panel um-staff-accounts">
+      <div class="um-staff-panel-heading um-staff-table-heading"><div><h3>Staff Accounts</h3><p>Active requests and complaints assigned to each staff member.</p></div>
+        <form method="GET" action="{{ url_for('user_role_administration') }}" class="um-staff-search"><input type="hidden" name="role" value="staff"><label class="sr-only" for="um-staff-query">Search staff by name, email, or mobile</label><input id="um-staff-query" name="q" value="{{ q }}" placeholder="Search staff…"><label class="sr-only" for="um-staff-status">Filter staff status</label><select id="um-staff-status" name="status"><option value="all" {{ 'selected' if selected_status == 'all' }}>All Status</option><option value="active" {{ 'selected' if selected_status == 'active' }}>Active</option><option value="inactive" {{ 'selected' if selected_status == 'inactive' }}>Inactive</option><option value="archived" {{ 'selected' if selected_status == 'archived' }}>Archived</option></select><button class="btn btn-outline btn-sm" type="submit">Filter</button></form>
+      </div>
+      {% if rows %}<div class="um-table-scroll" role="region" aria-label="Staff account records" tabindex="0"><table class="um-table um-staff-table">
+        <thead><tr><th scope="col">Staff</th><th scope="col">Email</th><th scope="col">Mobile Number</th><th scope="col">Assigned Office</th><th scope="col">Active Workload</th><th scope="col">Status</th><th scope="col">Registered</th><th scope="col">Actions</th></tr></thead>
+        <tbody>{% for u in rows %}<tr>
+          {% set initials = (u.full_name or '?').split() %}
+          <td class="um-name-cell"><span class="um-person-avatar" aria-hidden="true">{% if u.profile_picture %}<img src="{{ url_for('serve_upload', subdir='profiles', stored_name=u.profile_picture) }}" alt="" loading="lazy" onerror="this.hidden=true">{% endif %}<span class="um-initials">{{ (initials[0][0] ~ (initials[-1][0] if initials|length > 1 else ''))|upper }}</span></span><span class="um-person-name" title="{{ u.full_name }}">{{ u.full_name }}</span></td>
+          <td><span class="um-truncate" title="{{ u.email }}">{{ u.email }}</span></td><td>{{ u.contact_number or '—' }}</td>
+          <td><form method="POST" action="{{ url_for('set_staff_office', staff_id=u.id) }}" class="um-office-edit"><label class="sr-only" for="staff-office-{{ u.id }}">Assigned office for {{ u.full_name }}</label><select id="staff-office-{{ u.id }}" name="office">{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office == key }}>{{ cfg.label }}</option>{% endfor %}</select><button class="um-small-save" type="submit" aria-label="Save office for {{ u.full_name }}">Save</button></form></td>
+          <td><strong>{{ (u.active_request_count or 0) + (u.active_complaint_count or 0) }} active items</strong><span class="um-workload-detail">{{ u.active_request_count or 0 }} requests · {{ u.active_complaint_count or 0 }} complaints</span></td>
+          <td><span class="um-status-pill {{ 'archived' if u.is_archived|int else u.status }}">{{ 'Archived' if u.is_archived|int else u.status|title }}</span></td><td class="um-date" title="{{ u.created_at }}">{{ u.created_at or '—' }}</td>
+          <td><div class="um-row-actions"><a class="um-icon-action" href="{{ url_for('view_staff_account', staff_id=u.id) }}" aria-label="View {{ u.full_name }}" title="View">◉</a><a class="um-icon-action" href="{{ url_for('edit_staff_account', staff_id=u.id) }}" aria-label="Edit {{ u.full_name }}" title="Edit">✎</a><details class="um-more"><summary class="um-icon-action" aria-label="More actions for {{ u.full_name }}" title="More actions">⋯</summary><div class="um-more-menu">
+            {% if u.is_archived|int %}<form method="POST" action="{{ url_for('user_role_administration') }}"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button type="submit">Restore account</button></form>
+            {% else %}<form method="POST" action="{{ url_for('toggle_staff', staff_id=u.id) }}" onsubmit="return confirm('Change this staff account status?')"><button type="submit">{{ 'Deactivate' if u.status == 'active' else 'Activate' }}</button></form><form method="POST" action="{{ url_for('reset_staff_password', staff_id=u.id) }}" onsubmit="return confirm('Reset this staff member’s sign-in credentials?')"><button type="submit">Reset password</button></form><form method="POST" action="{{ url_for('user_role_administration') }}" onsubmit="return confirm('Archive this staff account and retain its history?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button type="submit">Archive account</button></form>
+              {% if founder %}<form method="POST" action="{{ url_for('user_role_administration') }}" class="um-role-change" onsubmit="return confirm('Change this account role?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="role"><label class="sr-only" for="staff-role-{{ u.id }}">Role for {{ u.full_name }}</label><select id="staff-role-{{ u.id }}" name="role"><option value="resident">Resident</option><option value="staff" selected>Staff</option><option value="admin">Administrator</option></select><label class="sr-only" for="staff-role-office-{{ u.id }}">Staff office</label><select id="staff-role-office-{{ u.id }}" name="office">{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office == key }}>{{ cfg.label }}</option>{% endfor %}</select><button type="submit">Change role</button></form>{% endif %}
+            {% endif %}
+            <form method="POST" action="{{ url_for('user_role_administration') }}" onsubmit="return confirm('Permanently delete this staff account? This cannot be undone. Accounts with linked service records will be blocked.')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="delete"><button class="um-danger-action" type="submit">Delete permanently</button></form>
+          </div></details></div></td>
+        </tr>{% endfor %}</tbody>
+      </table></div>{% else %}<div class="um-empty">No staff accounts match the selected filters.</div>{% endif %}
+    </article>
+  </section>
+  {% else %}
+  <div class="um-summary" aria-label="Account summary">
+    <article class="um-summary-card total"><span class="um-summary-icon" aria-hidden="true">♙</span><div><span>Total Users</span><strong>{{ counts.total }}</strong></div></article>
+    <article class="um-summary-card active"><span class="um-summary-icon" aria-hidden="true">✓</span><div><span>Active Accounts</span><strong>{{ counts.active }}</strong></div></article>
+    <article class="um-summary-card inactive"><span class="um-summary-icon" aria-hidden="true">⊗</span><div><span>Inactive Accounts</span><strong>{{ counts.inactive }}</strong></div></article>
+    <article class="um-summary-card archived"><span class="um-summary-icon" aria-hidden="true">▣</span><div><span>Archived Accounts</span><strong>{{ counts.archived }}</strong></div></article>
+  </div>
+
+  <form method="GET" class="um-filters" action="{{ url_for('user_role_administration') }}">
+    <label class="um-search"><span aria-hidden="true">⌕</span><span class="sr-only">Search by name, email, or mobile number</span>
+      <input name="q" value="{{ q }}" placeholder="Search by name, email, or mobile number…" autocomplete="off">
+    </label>
+    <label class="sr-only" for="um-role-filter">Role</label>
+    <select id="um-role-filter" name="role" aria-label="Filter by role">
+      <option value="" {{ 'selected' if not selected_role }}>All Roles</option>
+      {% if founder %}<option value="admin" {{ 'selected' if selected_role == 'admin' }}>Administrators</option>{% endif %}
+      <option value="staff" {{ 'selected' if selected_role == 'staff' }}>Staff</option>
+      <option value="resident" {{ 'selected' if selected_role == 'resident' }}>Residents</option>
+    </select>
+    <label class="sr-only" for="um-status-filter">Status</label>
+    <select id="um-status-filter" name="status" aria-label="Filter by status">
+      <option value="all" {{ 'selected' if selected_status == 'all' }}>All Status</option>
+      <option value="active" {{ 'selected' if selected_status == 'active' }}>Active</option>
+      <option value="inactive" {{ 'selected' if selected_status == 'inactive' }}>Inactive</option>
+      <option value="archived" {{ 'selected' if selected_status == 'archived' }}>Archived</option>
+    </select>
+    <button class="um-filter-submit" type="submit">Search</button>
+    {% if q or selected_role or selected_status != 'all' %}<a class="um-clear" href="{{ url_for('user_role_administration') }}">Clear filters</a>{% endif %}
+  </form>
+
+  <div class="um-table-card">
+    {% if rows %}
+    <div class="um-table-scroll" role="region" aria-label="User account records" tabindex="0">
+      <table class="um-table">
+        <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Mobile Number</th><th scope="col">Role</th><th scope="col">Status</th><th scope="col">Registered</th><th scope="col" class="um-actions-heading">Actions</th></tr></thead>
+        <tbody>
+        {% for u in rows %}
+          {% set initials = (u.full_name or '?').split() %}
+          <tr>
+            <td class="um-name-cell">
+              <span class="um-person-avatar" aria-hidden="true">
+                {% if u.profile_picture %}<img src="{{ url_for('serve_upload', subdir='profiles', stored_name=u.profile_picture) }}" alt="" loading="lazy" onerror="this.hidden=true">{% endif %}
+                <span class="um-initials">{{ (initials[0][0] ~ (initials[-1][0] if initials|length > 1 else ''))|upper }}</span>
+              </span>
+              <span class="um-person-name" title="{{ u.full_name }}">{{ u.full_name }}</span>
+            </td>
+            <td><span class="um-truncate" title="{{ u.email }}">{{ u.email }}</span></td>
+            <td>{{ u.contact_number or '—' }}</td>
+            <td><span class="um-role-pill {{ 'founder' if u.is_founding_admin|int else u.role }}">{{ 'Founding Admin' if u.is_founding_admin|int else u.role|title }}</span></td>
+            <td><span class="um-status-pill {{ 'archived' if u.is_archived|int else u.status }}">{{ 'Archived' if u.is_archived|int else u.status|title }}</span></td>
+            <td class="um-date" title="{{ u.created_at }}">{{ u.created_at or '—' }}</td>
+            <td><div class="um-row-actions">
+              {% if u.role == 'resident' %}
+                {% set view_url = url_for('view_resident', resident_id=u.id) %}{% set edit_url = url_for('edit_resident', resident_id=u.id) %}
+              {% elif u.role == 'staff' %}
+                {% set view_url = url_for('view_staff_account', staff_id=u.id) %}{% set edit_url = url_for('edit_staff_account', staff_id=u.id) %}
+              {% else %}
+                {% set view_url = url_for('admin_administrators') %}{% set edit_url = url_for('edit_administrator', account_id=u.id) if founder and not u.is_founding_admin|int else url_for('admin_administrators') %}
+              {% endif %}
+              <a class="um-icon-action" href="{{ view_url }}" aria-label="View {{ u.full_name }}" title="View"><span aria-hidden="true">◉</span></a>
+              {% if not u.is_founding_admin|int and (u.role != 'admin' or founder) %}<a class="um-icon-action" href="{{ edit_url }}" aria-label="Edit {{ u.full_name }}" title="Edit"><span aria-hidden="true">✎</span></a>
+              {% else %}<span class="um-protected" title="Founding Admin account is protected">Protected</span>{% endif %}
+              {% if not u.is_founding_admin|int and (u.role != 'admin' or founder) %}
+              <details class="um-more">
+                <summary class="um-icon-action" aria-label="More actions for {{ u.full_name }}" title="More actions"><span aria-hidden="true">⋯</span></summary>
+                <div class="um-more-menu">
+                  {% if u.is_archived|int %}
+                    <form method="POST" onsubmit="return confirm('Restore this account?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button type="submit">Restore account</button></form>
+                  {% else %}
+                    <form method="POST" onsubmit="return confirm('{{ 'Deactivate' if u.status == 'active' else 'Activate' }} this account?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="status"><button type="submit">{{ 'Deactivate' if u.status == 'active' else 'Activate' }}</button></form>
+                    <form method="POST" onsubmit="return confirm('Archive this account and retain its history?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button type="submit">Archive account</button></form>
+                    {% if founder %}<form method="POST" class="um-role-change" onsubmit="return confirm('Change this account role?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="role"><label class="sr-only" for="role-{{ u.id }}">Change role for {{ u.full_name }}</label><select id="role-{{ u.id }}" name="role">{% for item in ['resident','staff','admin'] %}<option value="{{ item }}" {{ 'selected' if u.role==item }}>{{ item|title }}</option>{% endfor %}</select><label class="sr-only" for="office-{{ u.id }}">Staff office</label><select id="office-{{ u.id }}" name="office"><option value="">Office (staff only)</option>{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office==key }}>{{ cfg.label }}</option>{% endfor %}</select><button type="submit">Change role</button></form>{% endif %}
+                  {% endif %}
+                  <form method="POST" onsubmit="return confirm('Permanently delete this account? This cannot be undone. Accounts with linked service records will be blocked.')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="delete"><button class="um-danger-action" type="submit">Delete permanently</button></form>
+                </div>
+              </details>
+              {% endif %}
+            </div></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}<div class="um-empty">No matching accounts. Adjust the search or filters and try again.</div>{% endif %}
+  </div>
+  {% endif %}
+
+  <footer class="um-pagination">
+    {% set first_record = ((page - 1) * per_page + 1) if total else 0 %}
+    {% set last_record = [page * per_page, total]|min %}
+    <span>Showing {{ first_record }} to {{ last_record }} of {{ total }} users</span>
+    {% if page_count > 1 %}<nav aria-label="User list pages" class="um-page-links">
+      {% if page > 1 %}<a href="{{ url_for('user_role_administration', role=selected_role or None, status=selected_status, q=q or None, page=page-1) }}" aria-label="Previous page">‹ Previous</a>{% else %}<span class="disabled">‹ Previous</span>{% endif %}
+      {% set start_page = [1, page - 2]|max %}{% set end_page = [page_count, page + 2]|min %}
+      {% if start_page > 1 %}<a href="{{ url_for('user_role_administration', role=selected_role or None, status=selected_status, q=q or None, page=1) }}">1</a>{% if start_page > 2 %}<span class="um-ellipsis">…</span>{% endif %}{% endif %}
+      {% for page_number in range(start_page, end_page + 1) %}
+        {% if page_number == page %}<span class="current" aria-current="page">{{ page_number }}</span>{% else %}<a href="{{ url_for('user_role_administration', role=selected_role or None, status=selected_status, q=q or None, page=page_number) }}">{{ page_number }}</a>{% endif %}
+      {% endfor %}
+      {% if end_page < page_count %}{% if end_page < page_count - 1 %}<span class="um-ellipsis">…</span>{% endif %}<a href="{{ url_for('user_role_administration', role=selected_role or None, status=selected_status, q=q or None, page=page_count) }}">{{ page_count }}</a>{% endif %}
+      {% if page < page_count %}<a href="{{ url_for('user_role_administration', role=selected_role or None, status=selected_status, q=q or None, page=page+1) }}" aria-label="Next page">Next ›</a>{% else %}<span class="disabled">Next ›</span>{% endif %}
+    </nav>{% endif %}
+  </footer>
+</section>
+<script>
+(() => {
+  const back = document.getElementById('um-back');
+  back?.addEventListener('click', (event) => {
+    try {
+      const previous = new URL(document.referrer);
+      if (previous.origin === window.location.origin && previous.href !== window.location.href && !/\/(login|verify-otp)(\/|$)/.test(previous.pathname)) {
+        event.preventDefault(); window.history.back();
+      }
+    } catch (_) { /* Keep the dashboard fallback link. */ }
+  });
+  document.addEventListener('click', (event) => {
+    document.querySelectorAll('.um-more[open]').forEach((menu) => {
+      if (!menu.contains(event.target)) menu.open = false;
+    });
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') document.querySelectorAll('.um-more[open]').forEach((menu) => menu.open = false);
+  });
+})();
+</script>
 {% endblock %}

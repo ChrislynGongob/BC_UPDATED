@@ -1,11 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Database Backup & Restore — BarangayConnect{% endblock %}
-{% block page_title %}Database Backup &amp; Restore{% endblock %}
+{% block title %}Database Backup — BarangayConnect{% endblock %}
+{% block page_title %}Database Backup{% endblock %}
 {% block content %}
 <div class="card"><h2>Create a database backup</h2><p>Backups are available to the Founding Admin only. They contain personal and operational records and must be handled as confidential data.</p>
   {% if postgres and not pg_dump_available %}<p class="hint">PostgreSQL backup is unavailable on this Render instance because <code>pg_dump</code> is not installed. Use Supabase's managed backup facilities.</p>{% endif %}
   <form method="POST" action="{{ url_for('create_backup') }}" onsubmit="return confirm('Create and download a backup containing confidential records?')"><button class="btn btn-primary" type="submit" {% if postgres and not pg_dump_available %}disabled{% endif %}>Create and download backup</button></form>
   {% if backups %}<div class="table-wrap" style="margin-top:14px"><table><tr><th>Backup file</th><th>Created</th><th>Size</th><th></th></tr>{% for b in backups %}<tr><td>{{ b.name }}</td><td>{{ b.created }}</td><td>{{ b.size_kb }} KB</td><td><a class="btn btn-outline btn-sm" href="{{ url_for('download_backup', name=b.name) }}">Download</a></td></tr>{% endfor %}</table></div>{% else %}<p class="hint">No application-managed backups are available.</p>{% endif %}
 </div>
-<div class="card"><h2>Restore procedure</h2><p>Automated restore is not enabled. The deployed app uses Supabase PostgreSQL and Render has no persistent disk configured; application-local files are not a durable production backup store. Restore through the Supabase managed recovery workflow or an authorized PostgreSQL operator during a maintenance window. Validate a backup against a staging project first, preserve a fresh pre-restore snapshot, and never replace production using ordinary application SQL.</p><p>Current runtime backup support: {% if postgres %}PostgreSQL custom dump {% if pg_dump_available %}is available{% else %}is unavailable (no <code>pg_dump</code> binary){% endif %}.{% else %}SQLite online backup is available.{% endif %}</p></div>
 {% endblock %}

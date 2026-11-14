@@ -525,6 +525,28 @@ def _user_value(user, key, default=None):
         return default
 
 
+def _has_user_column(conn, column):
+    """Check legacy users-table columns without mutating either database backend."""
+    if dbh.get_backend() == "postgres":
+        row = conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND table_name='users' AND column_name=?) AS present",
+            (column,),
+        ).fetchone()
+        return bool(row["present"])
+    return any(row["name"] == column for row in conn.execute("PRAGMA table_info(users)").fetchall())
+
+
+def _founding_admin_case(conn, alias=""):
+    """Build a compatible Founder projection for legacy Supabase schemas."""
+    prefix = f"{alias}." if alias else ""
+    marker = f"{prefix}is_founding_admin=1 OR " if _has_user_column(conn, "is_founding_admin") else ""
+    return (
+        f"CASE WHEN {marker}(lower({prefix}email)=? AND {prefix}is_super_admin=1) "
+        "THEN 1 ELSE 0 END"
+    )
+
+
 def _admin_session_proof(user):
     message = f"admin-credentials:{user['id']}:{user['password_hash']}:{user['email']}"
     return hmac.new(app.secret_key.encode(), message.encode(), hashlib.sha256).hexdigest()
@@ -3068,28 +3090,64 @@ def admin_staff(user):
             conn.commit()
             flash(f"Staff account created for {full_name}. The staff member can set their own sign-in password using Forgot Password.", "success")
         conn.close()
-        return redirect(url_for("admin_staff"))
+        return redirect(url_for("user_role_administration", role="staff", status="all"))
 
-    rows = conn.execute(
-        "SELECT u.id,u.full_name,u.email,u.profile_picture,u.contact_number,u.office,u.status,u.created_at,"
-        " (SELECT COUNT(*) FROM requests r WHERE r.assigned_staff_id=u.id "
-        "AND r.status NOT IN ('Completed','Rejected')) AS active_request_count,"
-        " (SELECT COUNT(*) FROM complaints c WHERE c.assigned_staff_id=u.id "
-        "AND c.status NOT IN ('Resolved','Closed','Rejected')) AS active_complaint_count,"
-        " (SELECT COUNT(*) FROM requests r WHERE r.assigned_staff_id=u.id "
-        "AND r.status NOT IN ('Completed','Rejected')) +"
-        " (SELECT COUNT(*) FROM complaints c WHERE c.assigned_staff_id=u.id "
-        "AND c.status NOT IN ('Resolved','Closed','Rejected')) AS active_work_count "
-        "FROM users u WHERE u.role='staff' ORDER BY u.created_at DESC"
-    ).fetchall()
-    coverage = {
-        key: conn.execute(
-            "SELECT COUNT(*) c FROM users WHERE role='staff' AND status='active' AND office=?", (key,)
-        ).fetchone()["c"]
-        for key in OFFICES
-    }
+    # Keep the former URL working, but show staff management only inside the
+    # centralized User Management Staff tab.
     conn.close()
-    return render_template("admin/staff.html", rows=rows, offices=OFFICES, coverage=coverage)
+    return redirect(url_for("user_role_administration", role="staff", status="all"))
+
+
+@app.route("/admin/staff/<int:staff_id>")
+@login_required("admin")
+def view_staff_account(user, staff_id):
+    conn = dbh.get_db()
+    staff_account = conn.execute(
+        "SELECT id,full_name,email,contact_number,office,position,status,is_archived,created_at "
+        "FROM users WHERE id=? AND role='staff'", (staff_id,),
+    ).fetchone()
+    conn.close()
+    if not staff_account:
+        abort(404)
+    return render_template("admin/staff_account_detail.html", account=staff_account)
+
+
+@app.route("/admin/staff/<int:staff_id>/edit", methods=["GET", "POST"])
+@login_required("admin")
+def edit_staff_account(user, staff_id):
+    conn = dbh.get_db()
+    staff_account = conn.execute(
+        "SELECT id,full_name,email,contact_number,office,position,status,is_archived,created_at "
+        "FROM users WHERE id=? AND role='staff'", (staff_id,),
+    ).fetchone()
+    if not staff_account:
+        conn.close()
+        abort(404)
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        raw_contact = request.form.get("contact_number", "").strip()
+        contact = _normalize_ph_mobile(raw_contact) if raw_contact else None
+        office = request.form.get("office", "").strip()
+        duplicate = conn.execute(
+            "SELECT id FROM users WHERE lower(email)=? AND id<>?", (email, staff_id)
+        ).fetchone()
+        if (not full_name or len(full_name) > 120 or not valid_email(email)
+                or (raw_contact and not contact) or office not in OFFICES or duplicate):
+            conn.close()
+            flash("Enter a valid name, email, mobile number, and office.", "error")
+            return render_template("admin/staff_account_form.html", account=staff_account, offices=OFFICES)
+        conn.execute(
+            "UPDATE users SET full_name=?,email=?,contact_number=?,office=?,position=?,auth_version=auth_version+1 WHERE id=?",
+            (full_name, email, contact, office, OFFICES[office]["label"], staff_id),
+        )
+        _audit(conn, user, "Updated staff account", target=email, module="accounts")
+        conn.commit()
+        conn.close()
+        flash("Staff account updated.", "success")
+        return redirect(url_for("user_role_administration", role="staff", status="all"))
+    conn.close()
+    return render_template("admin/staff_account_form.html", account=staff_account, offices=OFFICES)
 
 
 @app.route("/admin/users/<int:account_id>/mobile", methods=["POST"])
@@ -3110,16 +3168,18 @@ def update_account_mobile(user, account_id):
         abort(403)
     return_endpoint = {
         "resident": "admin_residents",
-        "staff": "admin_staff",
+        "staff": "user_role_administration",
         "admin": "admin_administrators",
     }[account["role"]]
+    return_args = {"role": "staff", "status": "all"} if account["role"] == "staff" else {}
     if user["role"] == "staff":
         return_endpoint = "view_residents"
+        return_args = {}
     contact_number = _normalize_ph_mobile(request.form.get("contact_number", "").strip())
     if not contact_number:
         conn.close()
         flash("Enter a valid Philippine mobile number, such as 0917 123 4567.", "error")
-        return redirect(url_for(return_endpoint))
+        return redirect(url_for(return_endpoint, **return_args))
     conn.execute(
         "UPDATE users SET contact_number=? WHERE id=?", (contact_number, account_id)
     )
@@ -3130,7 +3190,7 @@ def update_account_mobile(user, account_id):
     conn.commit()
     conn.close()
     flash(f"Mobile number updated for {account['full_name']}.", "success")
-    return redirect(url_for(return_endpoint))
+    return redirect(url_for(return_endpoint, **return_args))
 
 
 @app.route("/admin/staff/<int:staff_id>/office", methods=["POST"])
@@ -3145,13 +3205,13 @@ def set_staff_office(user, staff_id):
     if office not in OFFICES:
         conn.close()
         flash("Please choose a valid office.", "error")
-        return redirect(url_for("admin_staff"))
+        return redirect(url_for("user_role_administration", role="staff", status="all"))
     conn.execute("UPDATE users SET office=?, position=? WHERE id=?", (office, OFFICES[office]["label"], staff_id))
     dbh.log_action(conn, user, "Changed staff office", target=row["email"], details=f"office={row['office']} -> {office}")
     conn.commit()
     conn.close()
     flash(f"{row['full_name']} is now assigned to the {OFFICES[office]['label']} office.", "success")
-    return redirect(url_for("admin_staff"))
+    return redirect(url_for("user_role_administration", role="staff", status="all"))
 
 
 @app.route("/admin/staff/<int:staff_id>/toggle", methods=["POST"])
@@ -3168,7 +3228,7 @@ def toggle_staff(user, staff_id):
     conn.commit()
     conn.close()
     flash(f"Staff account {new_status}.", "success")
-    return redirect(url_for("admin_staff"))
+    return redirect(url_for("user_role_administration", role="staff", status="all"))
 
 
 @app.route("/admin/residents/<int:resident_id>/toggle", methods=["POST"])
@@ -3206,7 +3266,7 @@ def reset_staff_password(user, staff_id):
     conn.commit()
     conn.close()
     flash(f"Sign-in credentials reset for {row['full_name']}. The staff member can set a new password using Forgot Password.", "success")
-    return redirect(url_for("admin_staff"))
+    return redirect(url_for("user_role_administration", role="staff", status="all"))
 
 
 @app.route("/admin/administrators", methods=["GET", "POST"])
@@ -3254,9 +3314,9 @@ def admin_administrators(user):
         conn.close()
         return redirect(url_for("admin_administrators"))
 
+    founder_projection = _founding_admin_case(conn)
     rows = conn.execute(
-        "SELECT id, full_name, email, role, is_super_admin, "
-        "CASE WHEN is_founding_admin=1 OR (lower(email)=? AND is_super_admin=1) THEN 1 ELSE 0 END is_founding_admin, status, "
+        "SELECT id, full_name, email, role, is_super_admin, " + founder_projection + " AS is_founding_admin, status, "
         "is_archived, created_at, contact_number "
         "FROM users WHERE role='admin' ORDER BY created_at ASC", (FOUNDING_ADMIN_EMAIL,)
     ).fetchall()
@@ -3274,7 +3334,7 @@ def edit_administrator(user, account_id):
         abort(403)
     conn = dbh.get_db()
     account = conn.execute(
-        "SELECT id,full_name,email,recovery_email,contact_number,role,is_founding_admin,is_super_admin "
+        "SELECT id,full_name,email,recovery_email,contact_number,role,is_super_admin "
         "FROM users WHERE id=? AND role='admin'", (account_id,),
     ).fetchone()
     if not account:
@@ -3413,22 +3473,31 @@ SETTINGS_FIELDS = [
 @app.route("/admin/settings", methods=["GET", "POST"])
 @login_required("admin")
 def admin_settings(user):
-    conn = dbh.get_db()
     if request.method == "POST":
-        for key, _label in SETTINGS_FIELDS:
-            dbh.set_setting(conn, key, request.form.get(key, "").strip())
-        dbh.log_action(conn, user, "Updated barangay settings")
-        conn.commit()
-        conn.close()
-        flash("Settings saved.", "success")
-        return redirect(url_for("admin_settings"))
+        return _save_barangay_information(user)
+    return redirect(url_for("barangay_information_settings"))
 
+
+def _save_barangay_information(user):
+    conn = dbh.get_db()
+    for key, _label in SETTINGS_FIELDS:
+        dbh.set_setting(conn, key, request.form.get(key, "").strip())
+    dbh.log_action(conn, user, "Updated barangay settings")
+    conn.commit()
+    conn.close()
+    flash("Settings saved.", "success")
+    return redirect(url_for("barangay_information_settings"))
+
+
+@app.route("/admin/settings/barangay-information", methods=["GET", "POST"])
+@login_required("admin")
+def barangay_information_settings(user):
+    if request.method == "POST":
+        return _save_barangay_information(user)
+    conn = dbh.get_db()
     values = {key: dbh.get_setting(conn, key, "") for key, _label in SETTINGS_FIELDS}
     conn.close()
-    backups = [dbh.backup_info(n) for n in dbh.list_backups()]
-    return render_template("admin/settings.html", fields=SETTINGS_FIELDS, values=values,
-                           backups=backups, backup_keep=dbh.BACKUP_KEEP,
-                           backup_every=dbh.AUTO_BACKUP_EVERY_HOURS)
+    return render_template("admin/settings.html", fields=SETTINGS_FIELDS, values=values)
 
 
 @app.route("/admin/settings/users", methods=["GET", "POST"])
@@ -3447,6 +3516,9 @@ def user_role_administration(user):
         if protected or (target["role"] == "admin" and not founder):
             conn.close()
             abort(403)
+        if target["id"] == user["id"]:
+            conn.close()
+            abort(403)
         if operation == "role":
             new_role = request.form.get("role", "")
             allowed = {"resident", "staff", "admin"} if founder else {"resident", "staff"}
@@ -3463,13 +3535,46 @@ def user_role_administration(user):
             new_status = "inactive" if target["status"] == "active" else "active"
             conn.execute("UPDATE users SET status=?,auth_version=auth_version+1 WHERE id=?", (new_status, account_id))
             action, details = "Changed account status", f"status={target['status']} -> {new_status}"
-        elif operation == "archive" and not int(target.get("is_archived") or 0):
+        elif operation == "archive" and not int(_user_value(target, "is_archived", 0) or 0):
             conn.execute("UPDATE users SET is_archived=1,archived_at=datetime('now'),status='inactive',auth_version=auth_version+1 WHERE id=?",
                          (account_id,))
             action, details = "Archived account", f"role={target['role']}"
-        elif operation == "restore" and int(target.get("is_archived") or 0):
+        elif operation == "restore" and int(_user_value(target, "is_archived", 0) or 0):
             conn.execute("UPDATE users SET is_archived=0,archived_at=NULL,auth_version=auth_version+1 WHERE id=?", (account_id,))
             action, details = "Restored account", f"role={target['role']}"
+        elif operation == "delete":
+            linked_requests = conn.execute(
+                "SELECT COUNT(*) AS count FROM requests WHERE resident_id=? OR assigned_staff_id=?",
+                (account_id, account_id),
+            ).fetchone()["count"]
+            linked_complaints = conn.execute(
+                "SELECT COUNT(*) AS count FROM complaints "
+                "WHERE resident_id=? OR assigned_staff_id=? OR verified_by=?",
+                (account_id, account_id, account_id),
+            ).fetchone()["count"]
+            created_accounts = conn.execute(
+                "SELECT COUNT(*) AS count FROM users WHERE created_by=?", (account_id,)
+            ).fetchone()["count"]
+            if linked_requests or linked_complaints or created_accounts:
+                conn.close()
+                flash(
+                    "This account has linked service records or created accounts and cannot be deleted. "
+                    "Archive it to preserve its history.",
+                    "error",
+                )
+                if target["role"] == "staff":
+                    return redirect(url_for("user_role_administration", role="staff", status="all"))
+                return redirect(url_for("user_role_administration"))
+            # Preserve audit entries while removing the deleted user foreign key.
+            # The actor name stays on the historical log row.
+            conn.execute(
+                "UPDATE audit_logs SET actor_id=NULL,actor_name=COALESCE(NULLIF(actor_name,''),?) "
+                "WHERE actor_id=?",
+                (target["full_name"], account_id),
+            )
+            conn.execute("DELETE FROM notifications WHERE user_id=?", (account_id,))
+            conn.execute("DELETE FROM users WHERE id=?", (account_id,))
+            action, details = "Deleted account", f"role={target['role']}"
         else:
             conn.close()
             abort(400)
@@ -3477,36 +3582,105 @@ def user_role_administration(user):
         conn.commit()
         conn.close()
         flash("Account updated.", "success")
+        if target["role"] == "staff":
+            return redirect(url_for("user_role_administration", role="staff", status="all"))
         return redirect(url_for("user_role_administration"))
 
-    role = request.args.get("role", "")
-    status = request.args.get("status", "active")
-    term = request.args.get("q", "").strip()
+    role = request.args.get("role", "").strip().lower()
+    if role not in {"", "resident", "staff", "admin"}:
+        role = ""
+    if role == "admin" and not founder:
+        abort(403)
+    status = request.args.get("status", "all").strip().lower()
+    if status not in {"all", "active", "inactive", "archived"}:
+        status = "all"
+    term = request.args.get("q", "").strip()[:120]
+    page = request.args.get("page", 1, type=int) or 1
+    page = max(page, 1)
+    per_page = 25
+
     clauses, params = [], []
-    if role in {"resident", "staff", "admin"}:
+    if role:
         clauses.append("role=?")
         params.append(role)
     if status == "archived":
         clauses.append("is_archived=1")
+    elif status in {"active", "inactive"}:
+        clauses.extend(("is_archived=0", "status=?"))
+        params.append(status)
     else:
         clauses.append("is_archived=0")
-        if status in {"active", "inactive"}:
-            clauses.append("status=?")
-            params.append(status)
     if term:
-        clauses.append("(full_name LIKE ? OR email LIKE ?)")
-        params.extend((f"%{term}%", f"%{term}%"))
+        clauses.append("(full_name LIKE ? OR email LIKE ? OR contact_number LIKE ?)")
+        params.extend((f"%{term}%", f"%{term}%", f"%{term}%"))
+    if not founder:
+        clauses.append("role!='admin'")
     where = " WHERE " + " AND ".join(clauses)
     conn = dbh.get_db()
+    founder_projection = _founding_admin_case(conn)
+    total = conn.execute("SELECT COUNT(*) AS count FROM users" + where, params).fetchone()["count"]
+    page_count = max(1, (total + per_page - 1) // per_page)
+    page = min(page, page_count)
     rows = conn.execute(
-        "SELECT id,full_name,email,role,office,status,is_archived,"
-        "CASE WHEN is_founding_admin=1 OR (lower(email)=? AND is_super_admin=1) "
-        "THEN 1 ELSE 0 END AS is_founding_admin,created_at FROM users" + where +
-        " ORDER BY role,full_name LIMIT 500", [FOUNDING_ADMIN_EMAIL, *params],
+        "SELECT users.id,full_name,email,contact_number,profile_picture,role,office,status,is_archived," + founder_projection +
+        " AS is_founding_admin,created_at,"
+        "(SELECT COUNT(*) FROM requests r WHERE r.assigned_staff_id=users.id "
+        "AND r.status NOT IN ('Completed','Rejected')) AS active_request_count,"
+        "(SELECT COUNT(*) FROM complaints c WHERE c.assigned_staff_id=users.id "
+        "AND c.status NOT IN ('Resolved','Closed','Rejected')) AS active_complaint_count "
+        "FROM users" + where +
+        " ORDER BY role,full_name,id LIMIT ? OFFSET ?",
+        [FOUNDING_ADMIN_EMAIL, *params, per_page, (page - 1) * per_page],
     ).fetchall()
+
+    visible_clause = " WHERE role!='admin'" if not founder else ""
+    counts = {}
+    counts["total"] = conn.execute(
+        "SELECT COUNT(*) AS count FROM users" + visible_clause + (" AND " if visible_clause else " WHERE ") + "is_archived=0"
+    ).fetchone()["count"]
+    counts["active"] = conn.execute(
+        "SELECT COUNT(*) AS count FROM users" + visible_clause + (" AND " if visible_clause else " WHERE ") + "is_archived=0 AND status='active'"
+    ).fetchone()["count"]
+    counts["inactive"] = conn.execute(
+        "SELECT COUNT(*) AS count FROM users" + visible_clause + (" AND " if visible_clause else " WHERE ") + "is_archived=0 AND status='inactive'"
+    ).fetchone()["count"]
+    counts["archived"] = conn.execute(
+        "SELECT COUNT(*) AS count FROM users" + visible_clause + (" AND " if visible_clause else " WHERE ") + "is_archived=1"
+    ).fetchone()["count"]
+    tab_counts = {}
+    for tab_role in ("", "admin", "staff", "resident"):
+        tab_where = " WHERE is_archived=1" if status == "archived" else " WHERE is_archived=0"
+        tab_params = []
+        if status in {"active", "inactive"}:
+            tab_where += " AND status=?"
+            tab_params.append(status)
+        if tab_role:
+            tab_where += " AND role=?"
+            tab_params.append(tab_role)
+        if not founder:
+            tab_where += " AND role!='admin'"
+        if term:
+            tab_where += " AND (full_name LIKE ? OR email LIKE ? OR contact_number LIKE ?)"
+            tab_params.extend((f"%{term}%", f"%{term}%", f"%{term}%"))
+        tab_counts[tab_role or "all"] = conn.execute(
+            "SELECT COUNT(*) AS count FROM users" + tab_where, tab_params
+        ).fetchone()["count"]
+    coverage = {}
+    if role == "staff":
+        coverage = {
+            key: conn.execute(
+                "SELECT COUNT(*) AS count FROM users WHERE role='staff' AND status='active' "
+                "AND is_archived=0 AND office=?", (key,),
+            ).fetchone()["count"]
+            for key in OFFICES
+        }
     conn.close()
-    return render_template("admin/user_roles.html", rows=rows, offices=OFFICES,
-                           selected_role=role, selected_status=status, q=term, founder=founder)
+    return render_template(
+        "admin/user_roles.html", rows=rows, offices=OFFICES,
+        selected_role=role, selected_status=status, q=term, founder=founder,
+        counts=counts, tab_counts=tab_counts, page=page, page_count=page_count,
+        total=total, per_page=per_page, coverage=coverage,
+    )
 
 
 @app.route("/admin/settings/security")
@@ -3530,7 +3704,11 @@ def security_settings(user):
     ).fetchall()}
     admins = conn.execute("SELECT COUNT(*) count FROM users WHERE role='admin' AND status='active' AND is_archived=0").fetchone()["count"]
     visibility = "role IN ('resident','staff')" if not founder else "role IN ('resident','staff','admin')"
-    founder_clause = " AND NOT (role='admin' AND (is_founding_admin=1 OR (lower(email)=? AND is_super_admin=1)))" if founder else ""
+    founder_marker = "is_founding_admin=1 OR " if _has_user_column(conn, "is_founding_admin") else ""
+    founder_clause = (
+        f" AND NOT (role='admin' AND ({founder_marker}(lower(email)=? AND is_super_admin=1)))"
+        if founder else ""
+    )
     locked_params = [datetime.now(timezone.utc).replace(tzinfo=None).strftime("%Y-%m-%d %H:%M:%S")]
     if founder:
         locked_params.append(FOUNDING_ADMIN_EMAIL)
@@ -3637,7 +3815,7 @@ def create_backup(user):
         conn.commit()
         conn.close()
         flash("The database backup could not be completed. Check server configuration.", "error")
-        return redirect(url_for("admin_settings"))
+        return redirect(url_for("backup_management"))
     conn = dbh.get_db()
     _audit(conn, user, "Created and downloaded database backup", target=os.path.basename(path), module="backup")
     conn.commit()

@@ -368,7 +368,10 @@ class OfficeAccessTests(unittest.TestCase):
     # ------------------------------------------------------ admin staff form
     def test_admin_staff_creation_requires_valid_office(self):
         c = admin_client()
-        html = c.get("/admin/staff").get_data(as_text=True)
+        legacy_page = c.get("/admin/staff")
+        self.assertEqual(legacy_page.status_code, 302)
+        self.assertIn("/admin/settings/users?role=staff", legacy_page.location)
+        html = c.get("/admin/settings/users?role=staff&status=all").get_data(as_text=True)
         self.assertIn('name="office"', html)
         self.assertIn("Office Coverage", html)
 
