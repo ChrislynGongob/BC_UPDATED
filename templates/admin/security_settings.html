@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Security Settings — BarangayConnect{% endblock %}
+{% block page_title %}Security Settings{% endblock %}
+{% block content %}
+<div class="stat-grid"><div class="stat-card"><div class="num">{{ active_admins }}</div><div class="label">Active administrators</div></div><div class="stat-card"><div class="num">{{ locked_accounts }}</div><div class="label">Accounts currently locked</div></div><div class="stat-card"><div class="num">{{ max_failed_logins }}</div><div class="label">Failed attempts before lockout</div></div><div class="stat-card"><div class="num">{{ lockout_minutes }} min</div><div class="label">Lockout duration</div></div></div>
+<div class="card"><h2>Authentication</h2><p>Administrator accounts require email one-time-code verification. OTP challenges are single-use and time limited. Passwords, OTP values, and authentication secrets are not displayed here.</p><h3>Account lockout</h3><p>Accounts are temporarily locked after repeated failed password attempts. Unlock occurs after the configured timeout.</p><div class="actions-row"><a class="btn btn-outline" href="{{ url_for('audit_logs', module='authentication') }}">View authentication events</a><a class="btn btn-outline" href="{{ url_for('user_role_administration') }}">Manage accounts</a></div></div>
+{% endblock %}

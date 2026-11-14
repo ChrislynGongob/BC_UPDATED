@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}User Role Administration — BarangayConnect{% endblock %}
+{% block page_title %}User Role Administration{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="actions-row" style="margin-bottom:14px"><a class="btn btn-primary btn-sm" href="{{ url_for('create_resident') }}">Add Resident</a><a class="btn btn-outline btn-sm" href="{{ url_for('admin_staff') }}">Manage Staff Accounts</a>{% if founder %}<a class="btn btn-outline btn-sm" href="{{ url_for('admin_administrators') }}">Manage Administrators</a>{% endif %}</div>
+  <div class="actions-row" style="margin-bottom:14px"><a class="btn btn-primary btn-sm" href="{{ url_for('create_resident') }}">Add Resident</a><a class="btn btn-outline btn-sm" href="{{ url_for('admin_staff') }}">Manage Staff Accounts</a>{% if founder %}<a class="btn btn-outline btn-sm" href="{{ url_for('admin_administrators') }}">Manage Administrators</a>{% endif %}</div>
+  <form method="GET" class="filter-form"><div class="filter-grid">
+    <input name="q" value="{{ q }}" placeholder="Search name or email" aria-label="Search users">
+    <select name="role" aria-label="Role"><option value="">All roles</option>{% for item in ['resident','staff','admin'] %}<option value="{{ item }}" {{ 'selected' if selected_role==item }}>{{ item|title }}</option>{% endfor %}</select>
+    <select name="status" aria-label="Account status"><option value="active" {{ 'selected' if selected_status=='active' }}>Active</option><option value="inactive" {{ 'selected' if selected_status=='inactive' }}>Inactive</option><option value="archived" {{ 'selected' if selected_status=='archived' }}>Archived</option><option value="all" {{ 'selected' if selected_status=='all' }}>All status</option></select>
+    <button class="btn btn-primary btn-sm">Search</button>
+  </div></form>
+  {% if rows %}<div class="table-wrap"><table>
+    <tr><th>User</th><th>Role</th><th>Office</th><th>Status</th><th>Created</th><th>Actions</th></tr>
+    {% for u in rows %}<tr>
+      <td>{{ u.full_name }}<div class="muted">{{ u.email }}</div></td>
+      <td>{{ 'Founding Admin' if u.is_founding_admin|int else u.role|title }}</td><td>{{ offices[u.office].label if u.office in offices else '—' }}</td>
+      <td>{{ 'Archived' if u.is_archived|int else u.status|title }}</td><td class="muted">{{ u.created_at }}</td>
+      <td class="actions-row">
+        {% if not u.is_founding_admin|int and (u.role != 'admin' or founder) %}
+          {% if not u.is_archived|int %}
+            <form method="POST" onsubmit="return confirm('Change this account status?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="status"><button class="btn btn-outline btn-sm" type="submit">{{ 'Deactivate' if u.status=='active' else 'Activate' }}</button></form>
+            <form method="POST" onsubmit="return confirm('Archive this account and retain its history?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button class="btn btn-outline btn-sm" type="submit">Archive</button></form>
+          {% else %}<form method="POST" onsubmit="return confirm('Restore this account?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button class="btn btn-outline btn-sm" type="submit">Restore</button></form>{% endif %}
+          {% if founder %}<form method="POST" class="actions-row"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="role"><label class="sr-only" for="role-{{ u.id }}">Role for {{ u.full_name }}</label><select id="role-{{ u.id }}" name="role">{% for item in ['resident','staff','admin'] %}<option value="{{ item }}" {{ 'selected' if u.role==item }}>{{ item|title }}</option>{% endfor %}</select><select name="office" aria-label="Staff office">{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office==key }}>{{ cfg.label }}</option>{% endfor %}</select><button class="btn btn-outline btn-sm" type="submit">Change role</button></form>{% endif %}
+        {% endif %}
+      </td>
+    </tr>{% endfor %}
+  </table></div>{% else %}<div class="empty-state">No matching accounts.</div>{% endif %}
+</div>
+{% endblock %}

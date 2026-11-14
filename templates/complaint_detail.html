@@ -20,6 +20,7 @@
       <div class="detail-item"><div class="k">Resident contact</div><div class="v">{{ resident.contact_number or '—' }}</div></div>
     </div>
     <p><strong>Description:</strong> {{ c.description }}</p>
+    <p><a class="btn btn-outline btn-sm" href="{{ url_for('complaint_acknowledgement', complaint_id=c.id) }}">Download Acknowledgement PDF</a></p>
     {% if c.remarks %}<p><strong>Staff remarks:</strong> {{ c.remarks }}</p>{% endif %}
 
     {% if evidence %}

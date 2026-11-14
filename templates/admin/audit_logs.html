@@ -3,20 +3,39 @@
 {% block page_title %}Audit Logs{% endblock %}
 {% block content %}
 <div class="card">
-  <p class="muted">Append-only record of account provisioning and status changes across the system. Showing the latest 300 entries.</p>
+  <p class="muted">Append-only security and administrative history. {{ total }} matching events; showing up to 50 per page.</p>
+  <form class="filter-form" method="GET">
+    <div class="filter-grid">
+      <input name="q" value="{{ q }}" placeholder="Search actions, targets, details" aria-label="Search audit events">
+      <input name="actor" value="{{ actor }}" placeholder="Actor name or ID" aria-label="Filter by actor">
+      <select name="module" aria-label="Filter by module"><option value="">All modules</option>{% for item in modules %}<option value="{{ item }}" {{ 'selected' if module==item }}>{{ item|title }}</option>{% endfor %}</select>
+      <label>From <input type="date" name="start" value="{{ start }}"></label>
+      <label>To <input type="date" name="end" value="{{ end }}"></label>
+    </div>
+    <div class="actions-row"><button class="btn btn-primary btn-sm" type="submit">Filter</button><a class="btn btn-outline btn-sm" href="{{ url_for('audit_logs') }}">Clear</a></div>
+  </form>
   {% if rows %}
   <div class="table-wrap"><table>
-    <tr><th>Date</th><th>Actor</th><th>Action</th><th>Target</th><th>Details</th></tr>
+    <tr><th>Date</th><th>Actor</th><th>Role</th><th>Module</th><th>Action</th><th>Result</th><th>Target</th><th>Details</th><th>IP</th></tr>
     {% for a in rows %}
     <tr>
       <td class="muted">{{ a.created_at }}</td>
       <td>{{ a.actor_name or 'System' }}</td>
+      <td>{{ a.actor_role or 'System' }}</td>
+      <td>{{ a.module or '—' }}</td>
       <td>{{ a.action }}</td>
+      <td>{{ a.result or 'Success' }}</td>
       <td>{{ a.target or '—' }}</td>
       <td class="muted">{{ a.details or '' }}</td>
+      <td class="muted">{{ a.ip_address or '—' }}</td>
     </tr>
     {% endfor %}
   </table></div>
   {% else %}<div class="empty-state">No audit entries yet.</div>{% endif %}
+  {% if pages > 1 %}<div class="actions-row" style="margin-top:14px;">
+    {% if page > 1 %}<a class="btn btn-outline btn-sm" href="{{ url_for('audit_logs', q=q, actor=actor, module=module, start=start, end=end, page=page-1) }}">Previous</a>{% endif %}
+    <span class="hint">Page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}<a class="btn btn-outline btn-sm" href="{{ url_for('audit_logs', q=q, actor=actor, module=module, start=start, end=end, page=page+1) }}">Next</a>{% endif %}
+  </div>{% endif %}
 </div>
 {% endblock %}

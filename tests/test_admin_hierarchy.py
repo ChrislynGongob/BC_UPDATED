@@ -199,6 +199,116 @@ class AdminHierarchyTests(unittest.TestCase):
         conn.close()
         self.assertEqual(response.status_code, 302)
 
+    def test_resident_crud_archive_and_restore_preserve_history(self):
+        self.set_session(self.founder_id)
+        created = self.client.post("/admin/residents/new", data={
+            "full_name": "Archive Resident", "email": "archive@example.test",
+            "password": "Resident123", "address": "Purok 2", "contact_number": "09171234567",
+        })
+        self.assertEqual(created.status_code, 302)
+        conn = dbh.get_db()
+        resident = conn.execute("SELECT * FROM users WHERE email='archive@example.test'").fetchone()
+        conn.execute(
+            "INSERT INTO requests(reference_no,resident_id,request_type) VALUES('REQ-ARCHIVE-1',?,'Barangay Clearance')",
+            (resident["id"],),
+        )
+        conn.commit()
+        conn.close()
+        self.assertEqual(self.client.get(f"/admin/residents/{resident['id']}").status_code, 200)
+        updated = self.client.post(f"/admin/residents/{resident['id']}/edit", data={
+            "full_name": "Archive Resident Updated", "email": "archive@example.test",
+            "address": "Purok 3", "contact_number": "09171234567",
+        })
+        self.assertEqual(updated.status_code, 302)
+        self.assertEqual(self.client.post(f"/admin/residents/{resident['id']}/archive").status_code, 302)
+        conn = dbh.get_db()
+        archived = conn.execute("SELECT status,is_archived FROM users WHERE id=?", (resident["id"],)).fetchone()
+        history_count = conn.execute("SELECT COUNT(*) FROM requests WHERE resident_id=?", (resident["id"],)).fetchone()[0]
+        conn.close()
+        self.assertEqual((archived["status"], archived["is_archived"], history_count), ("inactive", 1, 1))
+        self.assertEqual(self.client.post(f"/admin/residents/{resident['id']}/restore").status_code, 302)
+        conn = dbh.get_db()
+        restored = conn.execute("SELECT status,is_archived FROM users WHERE id=?", (resident["id"],)).fetchone()
+        audit = conn.execute("SELECT module,result FROM audit_logs WHERE target='archive@example.test' ORDER BY id DESC LIMIT 1").fetchone()
+        conn.close()
+        self.assertEqual((restored["status"], restored["is_archived"]), ("inactive", 0))
+        self.assertEqual((audit["module"], audit["result"]), ("accounts", "Success"))
+
+    def test_regular_admin_cannot_change_roles_or_modify_founder(self):
+        conn = dbh.get_db()
+        cur = conn.execute(
+            "INSERT INTO users(full_name,email,password_hash,role,status) VALUES('Role Test','role@example.test',?,'resident','active')",
+            (generate_password_hash("Resident123"),),
+        )
+        resident_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+        self.set_session(self.regular_id)
+        self.assertEqual(self.client.post("/admin/settings/users", data={
+            "account_id": resident_id, "operation": "role", "role": "admin",
+        }).status_code, 400)
+        self.assertEqual(self.client.post("/admin/settings/users", data={
+            "account_id": self.founder_id, "operation": "status",
+        }).status_code, 403)
+        conn = dbh.get_db()
+        self.assertEqual(conn.execute("SELECT role FROM users WHERE id=?", (resident_id,)).fetchone()[0], "resident")
+        conn.close()
+
+    def test_complaint_acknowledgement_is_private_and_does_not_resolve(self):
+        conn = dbh.get_db()
+        cur = conn.execute(
+            "INSERT INTO users(full_name,email,password_hash,role,status) VALUES('Concern Owner','owner@example.test',?,'resident','active')",
+            (generate_password_hash("Resident123"),),
+        )
+        resident_id = cur.lastrowid
+        complaint = conn.execute(
+            "INSERT INTO complaints(reference_no,resident_id,category,description) VALUES('CMP-ACK-1',?,'Others','Private concern summary')",
+            (resident_id,),
+        )
+        complaint_id = complaint.lastrowid
+        conn.commit()
+        conn.close()
+        self.set_session(resident_id)
+        pdf = self.client.get(f"/complaints/{complaint_id}/acknowledgement.pdf")
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(pdf.mimetype, "application/pdf")
+        conn = dbh.get_db()
+        status = conn.execute("SELECT status FROM complaints WHERE id=?", (complaint_id,)).fetchone()[0]
+        conn.close()
+        self.assertEqual(status, "Pending")
+        conn = dbh.get_db()
+        cursor = conn.execute(
+            "INSERT INTO users(full_name,email,password_hash,role,office,status) VALUES('Treasurer Staff','treasurer@example.test',?,'staff','treasurer','active')",
+            (generate_password_hash("SafePassword123"),),
+        )
+        conn.commit()
+        treasurer_id = cursor.lastrowid
+        conn.close()
+        self.set_session(treasurer_id)
+        self.assertEqual(self.client.get(f"/complaints/{complaint_id}/acknowledgement.pdf").status_code, 403)
+
+    def test_authentication_events_are_audited_without_credentials(self):
+        conn = dbh.get_db()
+        cursor = conn.execute(
+            "INSERT INTO users(full_name,email,password_hash,role,status) VALUES('Login Resident','login@example.test',?,'resident','active')",
+            (generate_password_hash("LoginPassword123"),),
+        )
+        conn.commit()
+        conn.close()
+        client = A.app.test_client()
+        client.post("/login", data={"email": "login@example.test", "password": "wrong"})
+        client.post("/login", data={"email": "login@example.test", "password": "LoginPassword123"})
+        client.get("/logout")
+        conn = dbh.get_db()
+        rows = conn.execute(
+            "SELECT action,actor_role,module,result,details FROM audit_logs "
+            "WHERE target='login@example.test' ORDER BY id"
+        ).fetchall()
+        conn.close()
+        self.assertEqual([row["action"] for row in rows], ["Failed login", "Successful login", "Logout"])
+        self.assertTrue(all(row["actor_role"] == "resident" and row["module"] == "authentication" for row in rows))
+        self.assertTrue(all("LoginPassword123" not in (row["details"] or "") for row in rows))
+
 
 
 if __name__ == "__main__":

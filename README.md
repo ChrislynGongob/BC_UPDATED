@@ -97,7 +97,17 @@ production schema automatically.
   to file a complaint, password recovery). Works offline with zero setup. If
   you set an `ANTHROPIC_API_KEY` environment variable (see below), open-ended
   questions that don't match those cases are instead answered by Claude.
-- **Append-only audit log** of account provisioning and status changes.
+- **Searchable append-only audit log** with login successes/failures, actor role,
+  module, result, available IP address, date filters, and pagination. Passwords,
+  OTPs, session tokens, and complaint descriptions are not audit fields.
+- **Resident account administration** — administrators can create, view, edit,
+  deactivate, archive, and restore residents. Archiving disables login and keeps
+  request/complaint history intact.
+- **System Settings** — centralized role administration, administrator
+  management, security status, and Founding Admin-only database backups.
+- **Complaint acknowledgement PDF** — authorized residents and staff/admins can
+  download a receipt that distinguishes acknowledgement from resolution and
+  leaves all signature lines blank.
 - **Founding-admin-only administrator creation** — only the original seeded
   Administrator account can create additional Administrator accounts. Other
   admins can still manage staff, residents, requests, complaints, and reports,
@@ -308,21 +318,22 @@ admin accounts can only be created from inside the Admin Dashboard.
 
 ## Administrator hierarchy and Founding Admin transfer
 
-`users.is_founding_admin` designates the single Founding Admin. The Founding
-Admin must also have `is_super_admin=1`. Multiple Super Admins are allowed;
-Super Admins can create regular Admin accounts, and regular Admins cannot create
-accounts or change elevated roles. The application does not transfer ownership
-on deployment or during account setup.
+`users.is_founding_admin` designates the single Founding Admin and serves as the
+system's highest administrative authority. The legacy `is_super_admin` integer
+column remains for compatibility; it does not create a separate Super Admin
+role. Only the Founding Admin can manage administrator accounts, change roles
+to Administrator, and download application-created database backups. Regular
+Admins can manage resident and staff accounts, operational records, and reports.
 
 For PostgreSQL, schema migration and account provisioning are separate steps:
 
 1. Schedule a maintenance window and take a recoverable database backup.
-2. Review and run `postgres_migrations/001_admin_hierarchy.sql` manually as the database owner. It adds the Founder flag and a unique partial index, preserves existing role flags, and does not select or modify any account. It stops if existing Founder records are inconsistent.
-3. Deploy the application code to Render. Do not run schema migration from the Render start command; PostgreSQL migrations remain manual.
-4. If the database has no Founder, set `DB_BACKEND=postgres`, `DATABASE_URL`, `FOUNDING_ADMIN_NAME`, and `FOUNDING_ADMIN_PASSWORD` in a protected, short-lived environment. Run `python setup_founding_admin.py` once. It provisions `ralphpatrickga@gmail.com` as active Founder and Super Admin, hashes the supplied password, requires a password change after OTP login, and refuses to modify an existing account or proceed if another Founder exists.
+2. Review and run `postgres_migrations/001_admin_hierarchy.sql` if it has not already been applied, then `postgres_migrations/002_account_archive_audit.sql`, manually as the database owner. Migration 002 adds account archive fields and audit metadata only; it preserves existing rows.
+3. Deploy the application code to Render only after the migration succeeds. Do not run schema migration from the Render start command; PostgreSQL migrations remain manual.
+4. If the database has no Founder, set `DB_BACKEND=postgres`, `DATABASE_URL`, `FOUNDING_ADMIN_NAME`, and `FOUNDING_ADMIN_PASSWORD` in a protected, short-lived environment. Run `python setup_founding_admin.py` once. It provisions `ralphpatrickga@gmail.com` as the active Founding Admin, hashes the supplied password, requires a password change after OTP login, and refuses to modify an existing account or proceed if another Founder exists.
 5. Have the new Founder complete OTP login and the required password change. Confirm exactly one active Founder, then remove the temporary password variable from the environment.
 
-If a Founder already exists, do not run the setup script to replace them. Use the authorized Founding Admin transfer flow. No account transfer is performed by the schema migration or application deployment.
+If a Founder already exists, do not run the setup script to replace them. The application does not provide an ownership transfer workflow; arrange any succession through a separately reviewed database-owner procedure.
 
 ## Running the tests
 
@@ -381,10 +392,7 @@ and recovery guidance, see [docs/SUPABASE_MIGRATION.md](./docs/SUPABASE_MIGRATIO
 
 ## Backups, bulk actions, resident filters
 
-- **Database backup** (Admin → Settings): SQLite uses the online backup API
-  and daily local copies. PostgreSQL uses `pg_dump` for manual downloads when
-  `pg_dump` is installed; Render's local filesystem is ephemeral, so retain
-  downloads elsewhere and configure Supabase-managed backups separately.
+- **Database backup** (Founding Admin -> System Settings): SQLite uses the online backup API. PostgreSQL downloads require `pg_dump` or `PG_DUMP_PATH`; files written to Render's filesystem are ephemeral because `render.yaml` has no persistent disk. Download copies to approved off-site storage promptly. Automated application restore is disabled. Follow Supabase's managed backup process for the project's plan; validate a restore against a separate project where possible and schedule production recovery as a maintenance operation.
 - **Bulk resolve/close** (Complaints pages, admin and BPSO staff): tick complaints, then Resolve or Close selected.
 - **Manage Residents filters**: status, purok, and address search.
 - **Staff/admin navigation badges**: Requests counts newly submitted requests visible to that role/office; Concerns counts pending concerns.

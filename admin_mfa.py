@@ -155,7 +155,8 @@ def register_admin_mfa(app, dbh, email_service):
                         "UPDATE admin_otp_challenges SET email_otp_hash=NULL,used_at=? WHERE user_id=?",
                         (now.isoformat(), user["id"]),
                     )
-                    dbh.log_action(conn, user, "Admin email MFA verified")
+                    dbh.log_action(conn, user, "Admin email MFA verified", module="authentication",
+                                   ip_address=request.remote_addr)
                     conn.commit()
                     session.clear()
                     if user["must_reset_pw"]:
@@ -171,9 +172,15 @@ def register_admin_mfa(app, dbh, email_service):
                     session["admin_mfa_proof"] = digest(
                         f"admin-credentials:{user['id']}:{user['password_hash']}:{user['email']}"
                     )
+                    dbh.log_action(conn, user, "Successful login", target=user["email"],
+                                   module="authentication", ip_address=request.remote_addr)
+                    conn.commit()
                     return redirect(url_for("admin_dashboard"))
                 if usable:
                     conn.execute("UPDATE admin_otp_challenges SET attempts=attempts+1 WHERE user_id=?", (user["id"],))
+                dbh.log_action(conn, user, "Failed MFA verification", target=user["email"],
+                               module="authentication", result="Failure",
+                               ip_address=request.remote_addr)
                 conn.commit()
                 flash("The verification code is invalid, expired, used, or has reached the five-attempt limit.", "error")
                 status = 400

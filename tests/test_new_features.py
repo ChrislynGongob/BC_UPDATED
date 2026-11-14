@@ -78,8 +78,26 @@ class FeatureTestBase(unittest.TestCase):
 
 
 class BackupTests(FeatureTestBase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        conn = dbh.get_db()
+        cur = conn.execute(
+            "INSERT INTO users(full_name,email,password_hash,role,is_super_admin,is_founding_admin) "
+            "VALUES ('Test Founding Admin','founder-backup@example.test','not-used','admin',1,1)"
+        )
+        cls.founder_id = cur.lastrowid
+        conn.commit()
+        conn.close()
+
+    def founder_client(self):
+        client = A.app.test_client()
+        with client.session_transaction() as state:
+            state.update(user_id=self.founder_id, role="admin")
+        return client
+
     def test_admin_can_download_a_valid_backup(self):
-        r = admin_client().post("/admin/settings/backup")
+        r = self.founder_client().post("/admin/settings/backup")
         self.assertEqual(r.status_code, 200)
         self.assertIn("attachment", r.headers["Content-Disposition"])
         self.assertIn("barangayconnect-", r.headers["Content-Disposition"])
@@ -91,17 +109,19 @@ class BackupTests(FeatureTestBase):
         self.assertEqual(c.execute("SELECT COUNT(*) FROM users").fetchone()[0],
                          self.q("SELECT COUNT(*) c FROM users")[0]["c"])
         c.close()
-        self.assertTrue(self.q("SELECT 1 FROM audit_logs WHERE action='Downloaded database backup'"))
+        self.assertTrue(self.q("SELECT 1 FROM audit_logs WHERE action='Created and downloaded database backup'"))
 
     def test_only_admin_may_back_up(self):
         staff = client_for("liza.staff@barangayconnect.ph", STAFF_PW)
         self.assertEqual(staff.post("/admin/settings/backup").status_code, 403)
         self.assertEqual(staff.get("/admin/settings").status_code, 403)
+        self.assertEqual(admin_client().post("/admin/settings/backup").status_code, 403)
+        self.assertEqual(self.founder_client().post("/admin/settings/backup").status_code, 200)
         anon = A.app.test_client()
         self.assertEqual(anon.post("/admin/settings/backup").status_code, 302)  # -> login
 
     def test_download_existing_and_reject_bad_names(self):
-        a = admin_client()
+        a = self.founder_client()
         a.post("/admin/settings/backup")
         name = dbh.list_backups()[0]
         self.assertEqual(a.get(f"/admin/settings/backup/{name}").status_code, 200)
@@ -109,11 +129,11 @@ class BackupTests(FeatureTestBase):
             self.assertEqual(a.get(f"/admin/settings/backup/{bad}").status_code, 404, bad)
 
     def test_settings_page_lists_backups(self):
-        a = admin_client()
+        a = self.founder_client()
         a.post("/admin/settings/backup")
-        html = a.get("/admin/settings").get_data(as_text=True)
+        html = a.get("/admin/settings/backups").get_data(as_text=True)
         self.assertIn("Database Backup", html)
-        self.assertIn("Back up now &amp; download", html)
+        self.assertIn("Create and download backup", html)
         self.assertNotIn("A backup is made automatically", html)
         self.assertNotIn("Keep downloaded copies somewhere safe", html)
         self.assertNotIn("Note: this saves the database only", html)
@@ -271,7 +291,7 @@ class BulkComplaintTests(FeatureTestBase):
         hist_after = self.q("SELECT COUNT(*) c FROM status_history WHERE entity_type='complaint'")[0]["c"]
         self.assertEqual(hist_after - hist_before, len(ids))
         self.assertEqual(len(self.q(
-            "SELECT 1 FROM audit_logs WHERE action='Updated complaint status to Resolved' AND details LIKE '%(bulk action)%'")),
+            "SELECT 1 FROM audit_logs WHERE action='Updated complaint status to Resolved' AND details='bulk action'")),
             len(ids))
         owners = {r["resident_id"] for r in self.q(f"SELECT resident_id FROM complaints WHERE id IN ({','.join('?'*len(ids))})", ids)}
         for o in owners:

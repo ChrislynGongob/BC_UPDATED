@@ -51,7 +51,7 @@
         <div class="nav-section-label">People</div>
         <a href="{{ url_for('admin_residents') }}" class="{{ 'active' if request.endpoint=='admin_residents' }}"><span class="nav-icon" aria-hidden="true">♙</span>Manage Residents</a>
         <a href="{{ url_for('admin_staff') }}" class="{{ 'active' if request.endpoint=='admin_staff' }}"><span class="nav-icon" aria-hidden="true">♧</span>Manage Staff</a>
-        {% if current_user.is_super_admin or current_user.is_founding_admin %}
+        {% if is_founding_admin_user %}
         <a href="{{ url_for('admin_administrators') }}" class="{{ 'active' if request.endpoint=='admin_administrators' }}"><span class="nav-icon" aria-hidden="true">◇</span>Administrators</a>
         {% endif %}
         <div class="nav-section-label">Services</div>
@@ -62,6 +62,12 @@
         <div class="nav-section-label">Insights</div>
         <a href="{{ url_for('admin_reports') }}" class="{{ 'active' if request.endpoint in ['admin_reports','admin_complaint_analytics_page','admin_document_request_analytics_page'] }}"><span class="nav-icon" aria-hidden="true">▥</span>Reports &amp; Analytics</a>
         <a href="{{ url_for('audit_logs') }}" class="{{ 'active' if request.endpoint=='audit_logs' }}"><span class="nav-icon" aria-hidden="true">◷</span>Audit Logs</a>
+      {% endif %}
+      {% if current_user.role == 'admin' %}
+        <div class="nav-section-label">System Settings</div>
+        <a href="{{ url_for('user_role_administration') }}">User Role Administration</a>
+        {% if is_founding_admin_user %}<a href="{{ url_for('admin_administrators') }}">Manage Administrators</a><a href="{{ url_for('backup_management') }}">Database Backup &amp; Restore</a>{% endif %}
+        <a href="{{ url_for('security_settings') }}">Security Settings</a>
       {% endif %}
     </nav>
     <a href="{{ url_for('logout') }}" class="logout-link">Logout</a>

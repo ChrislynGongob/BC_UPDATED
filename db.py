@@ -536,12 +536,28 @@ def migrate_db():
         conn.execute(
             "ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
         )
+    if "is_archived" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0")
+    if "archived_at" not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN archived_at TEXT")
     if "failed_logins" not in user_cols:
         conn.execute(
             "ALTER TABLE users ADD COLUMN failed_logins INTEGER NOT NULL DEFAULT 0"
         )
     if "locked_until" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN locked_until TEXT")
+    conn.execute("CREATE TABLE IF NOT EXISTS audit_logs ("
+                 "id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id INTEGER, actor_name TEXT, "
+                 "action TEXT NOT NULL, target TEXT, details TEXT, "
+                 "created_at TEXT NOT NULL DEFAULT (datetime('now')))")
+    audit_cols = {r["name"] for r in conn.execute("PRAGMA table_info(audit_logs)").fetchall()}
+    for column, definition in (("actor_role", "TEXT"), ("module", "TEXT"),
+                               ("result", "TEXT NOT NULL DEFAULT 'Success'"),
+                               ("ip_address", "TEXT")):
+        if column not in audit_cols:
+            conn.execute(f"ALTER TABLE audit_logs ADD COLUMN {column} {definition}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_id)")
     if "contact_number" not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN contact_number TEXT")
     user_cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
@@ -768,10 +784,40 @@ def gen_temp_password(length=10):
     return "".join(random.choices(chars, k=length))
 
 
-def log_action(conn, actor, action, target=None, details=None):
+def log_action(conn, actor, action, target=None, details=None, *, module=None,
+               result="Success", ip_address=None):
+    """Append a security or administrative event without recording secrets/content."""
+    try:
+        actor_role = actor["role"] if actor else None
+    except (KeyError, IndexError):
+        actor_role = None
+    if module is None:
+        action_lower = action.lower()
+        if any(word in action_lower for word in ("login", "logout", "mfa", "password", "otp")):
+            module = "authentication"
+        elif "complaint" in action_lower or "concern" in action_lower:
+            module = "complaints"
+        elif "request" in action_lower:
+            module = "requests"
+        elif "report" in action_lower or "analytics" in action_lower:
+            module = "reports"
+        elif "backup" in action_lower or "restore" in action_lower:
+            module = "backup"
+        elif "announcement" in action_lower:
+            module = "announcements"
+        elif any(word in action_lower for word in ("account", "resident", "staff", "administrator", "role")):
+            module = "accounts"
+        elif "setting" in action_lower or "security" in action_lower:
+            module = "security"
+        else:
+            module = action.split(" ", 1)[0].lower()
     conn.execute(
-        "INSERT INTO audit_logs (actor_id, actor_name, action, target, details) VALUES (?,?,?,?,?)",
-        (actor["id"] if actor else None, actor["full_name"] if actor else "System", action, target, details),
+        "INSERT INTO audit_logs "
+        "(actor_id, actor_name, action, target, details, actor_role, module, result, ip_address) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (actor["id"] if actor else None, actor["full_name"] if actor else "System",
+         action, target, details, actor_role, module,
+         result, ip_address),
     )
 
 
@@ -866,6 +912,14 @@ def backup_database(keep=None):
     finally:
         dst.close()
         src.close()
+    verify = sqlite3.connect(dest)
+    try:
+        integrity = verify.execute("PRAGMA integrity_check").fetchone()[0]
+    finally:
+        verify.close()
+    if integrity != "ok":
+        os.remove(dest)
+        raise RuntimeError("SQLite backup failed its integrity check.")
     for old in list_backups()[keep:]:     # newest first -> drop the oldest
         try:
             os.remove(os.path.join(folder, old))

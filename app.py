@@ -8,6 +8,7 @@ import logging
 import math
 import mimetypes
 import secrets
+import shutil
 import threading
 import time
 from functools import wraps
@@ -313,6 +314,9 @@ def current_user():
     conn = dbh.get_db()
     row = conn.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
     conn.close()
+    if row and (row["status"] != "active" or int(row["is_archived"] or 0)):
+        session.clear()
+        row = None
     g._current_user = row
     return g._current_user
 
@@ -449,6 +453,21 @@ def login_required(*roles):
             return f(user, *args, **kwargs)
         return wrapped
     return decorator
+
+
+def is_founding_admin(user):
+    """Recognize the designated Founding Admin across legacy flag schemas."""
+    if not user or user["role"] != "admin":
+        return False
+    return bool(int(user["is_founding_admin"] or 0)) or (
+        user["email"].strip().lower() == FOUNDING_ADMIN_EMAIL
+        and bool(int(user["is_super_admin"] or 0))
+    )
+
+
+def _audit(conn, actor, action, target=None, details=None, *, module=None, result="Success"):
+    dbh.log_action(conn, actor, action, target, details, module=module, result=result,
+                   ip_address=request.remote_addr if has_request_context() else None)
 
 
 def handled_request_types(user):
@@ -852,8 +871,13 @@ def inject_globals():
             nav_counts["new_complaints"] if "new_complaints" in nav_columns else 0
         )
         conn.close()
+    safe_user = None
+    if user:
+        sensitive = {"password_hash", "failed_logins", "locked_until", "recovery_email"}
+        safe_user = {key: user[key] for key in user.keys() if key not in sensitive}
     return dict(
-        current_user=user, unread_count=unread, now=datetime.now(),
+        current_user=safe_user, unread_count=unread, now=datetime.now(),
+        is_founding_admin_user=is_founding_admin(user),
         nav_requests=bool(user and handled_request_types(user)),
         nav_complaints=bool(user and can_handle_complaints(user)),
         nav_new_requests=new_requests, nav_new_complaints=new_complaints,
@@ -937,7 +961,8 @@ def register():
             "INSERT INTO resident_concern_allowances (user_id, remaining) VALUES (?,?)",
             (cur.lastrowid, COMPLAINT_ALLOWANCE_MAX),
         )
-        dbh.log_action(conn, {"id": cur.lastrowid, "full_name": full_name}, "Resident self-registered", target=email)
+        dbh.log_action(conn, {"id": cur.lastrowid, "full_name": full_name, "role": "resident"},
+                       "Resident self-registered", target=email, module="accounts")
         conn.commit()
         conn.close()
         flash("Account created successfully. You can now log in.", "success")
@@ -963,17 +988,27 @@ def login():
         user = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
 
         if not user or user["status"] != "active":
+            _audit(conn, user, "Failed login", target=email or None,
+                   details="Invalid credentials or inactive account", module="authentication",
+                   result="Failure")
+            conn.commit()
             conn.close()
             flash("Invalid credentials or inactive account.", "error")
             return render_template("login.html")
 
         if dbh.is_locked(user):
+            _audit(conn, user, "Failed login", target=email, details="Account locked",
+                   module="authentication", result="Failure")
+            conn.commit()
             conn.close()
             flash("This account is temporarily locked due to repeated failed attempts. Try again later.", "error")
             return render_template("login.html")
 
         if not check_password_hash(user["password_hash"], password):
             locked = dbh.register_failed_login(conn, user)
+            _audit(conn, user, "Failed login", target=email, details="Invalid credentials",
+                   module="authentication", result="Failure")
+            conn.commit()
             conn.close()
             if locked:
                 flash("Too many failed attempts. Account locked for 15 minutes.", "error")
@@ -990,6 +1025,10 @@ def login():
             return redirect(url_for("first_login_reset"))
         session["user_id"] = user["id"]
         session["role"] = user["role"]
+        conn = dbh.get_db()
+        _audit(conn, user, "Successful login", target=email, module="authentication")
+        conn.commit()
+        conn.close()
         return redirect(url_for(f"{user['role']}_dashboard"))
 
     return render_template("login.html")
@@ -1036,6 +1075,7 @@ def first_login_reset():
             (generate_password_hash(password), user_id),
         )
         dbh.log_action(conn, user, "Changed initial password on first login")
+        _audit(conn, user, "Successful login", target=user["email"], module="authentication")
         conn.commit()
         conn.close()
         session.clear()
@@ -1356,6 +1396,12 @@ def reset_password(token):
 
 @app.route("/logout")
 def logout():
+    user = current_user()
+    if user:
+        conn = dbh.get_db()
+        _audit(conn, user, "Logout", target=user["email"], module="authentication")
+        conn.commit()
+        conn.close()
     session.clear()
     flash("You have been logged out.", "info")
     return redirect(url_for("index"))
@@ -2081,6 +2127,83 @@ def view_complaint(user, complaint_id):
     )
 
 
+@app.route("/complaints/<int:complaint_id>/acknowledgement.pdf")
+@login_required("resident", "staff", "admin")
+def complaint_acknowledgement(user, complaint_id):
+    conn = dbh.get_db()
+    complaint = conn.execute(
+        "SELECT c.*,u.full_name resident_name FROM complaints c "
+        "JOIN users u ON u.id=c.resident_id WHERE c.id=?", (complaint_id,),
+    ).fetchone()
+    if not complaint or (user["role"] == "resident" and complaint["resident_id"] != user["id"]):
+        conn.close()
+        abort(404)
+    if user["role"] == "staff" and not can_handle_complaints(user):
+        conn.close()
+        abort(403)
+    barangay_name = dbh.get_setting(conn, "barangay_name", "BarangayConnect")
+    acknowledged_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    _audit(conn, user, "Generated complaint acknowledgement", target=complaint["reference_no"],
+           module="reports")
+    conn.commit()
+    conn.close()
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from xml.sax.saxutils import escape
+
+    pdf = io.BytesIO()
+    doc = SimpleDocTemplate(pdf, pagesize=letter, leftMargin=.7*inch, rightMargin=.7*inch,
+                            topMargin=.55*inch, bottomMargin=.55*inch)
+    styles = getSampleStyleSheet()
+    normal = styles["BodyText"]
+    story = []
+    seal = os.path.join(BASE_DIR, "static", "images", "barangay-seal.png")
+    if os.path.isfile(seal):
+        story.append(Image(seal, width=.7*inch, height=.7*inch, kind="proportional"))
+    story.extend([Paragraph(escape(barangay_name), styles["Title"]),
+                  Paragraph("COMPLAINT / CONCERN ACKNOWLEDGEMENT OF RECEIPT", styles["Heading2"]),
+                  Spacer(1, 12)])
+    summary = (complaint["description"] or "").strip()
+    data = [
+        ["Acknowledgement No.", escape(complaint["reference_no"])],
+        ["Concern Reference No.", escape(complaint["reference_no"])],
+        ["Date Received", escape(str(complaint["created_at"]))],
+        ["Date Acknowledged", escape(acknowledged_at)],
+        ["Reporting Citizen", escape(complaint["resident_name"])],
+        ["Concern", Paragraph(escape(complaint["category"]), normal)],
+        ["Summary", Paragraph(escape(summary), normal)],
+        ["Current Status", escape(complaint["status"])],
+        ["Action Taken", Paragraph(escape(complaint["remarks"] or "No action recorded."), normal)],
+    ]
+    table = Table(data, colWidths=[1.65*inch, 5.1*inch], hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (0,-1), colors.HexColor("#eef2f7")),
+        ("GRID", (0,0), (-1,-1), .4, colors.HexColor("#bdc8d7")),
+        ("VALIGN", (0,0), (-1,-1), "TOP"), ("PADDING", (0,0), (-1,-1), 8),
+    ]))
+    story.extend([table, Spacer(1, 22),
+        Paragraph("This form acknowledges receipt of the concern only. It does not certify that the matter has been resolved.", normal),
+        Spacer(1, 35)])
+    signatories = Table([
+        ["____________________________", "____________________________", "____________________________"],
+        ["Receiving Personnel", "Reporting Citizen", "Barangay Captain/Chairman — Approved By"],
+        ["Date: ____________________", "Date: ____________________", "Date: ____________________"],
+    ], colWidths=[2.25*inch]*3)
+    signatories.setStyle(TableStyle([("ALIGN", (0,0), (-1,-1), "CENTER"),
+                                     ("VALIGN", (0,0), (-1,-1), "TOP"),
+                                     ("FONTSIZE", (0,0), (-1,-1), 8),
+                                     ("TOPPADDING", (0,0), (-1,-1), 5)]))
+    story.append(signatories)
+    doc.build(story)
+    pdf.seek(0)
+    return send_file(pdf, mimetype="application/pdf", as_attachment=True,
+                     download_name=f"acknowledgement-{complaint['reference_no']}.pdf")
+
+
 @app.route("/notifications")
 @login_required("resident", "staff", "admin")
 def notifications(user):
@@ -2322,7 +2445,7 @@ def update_request_status(user, request_id):
         "UPDATE requests SET status=?, remarks=?, assigned_staff_id=?, updated_at=datetime('now') WHERE id=?",
         (new_status, remarks, assigned, request_id),
     )
-    dbh.log_action(conn, user, f"Updated request status to {new_status}", target=row["reference_no"], details=remarks)
+    dbh.log_action(conn, user, f"Updated request status to {new_status}", target=row["reference_no"], module="requests")
     if new_status != row["status"]:
         dbh.log_status(conn, "request", request_id, new_status, user["full_name"], remarks or None)
     dbh.notify(
@@ -2363,7 +2486,7 @@ def update_complaint_status(user, complaint_id):
         "UPDATE complaints SET remarks=?, assigned_staff_id=?, updated_at=datetime('now') WHERE id=?",
         (remarks, assigned, complaint_id),
     )
-    dbh.log_action(conn, user, f"Updated complaint status to {new_status}", target=row["reference_no"], details=remarks)
+    dbh.log_action(conn, user, f"Updated complaint status to {new_status}", target=row["reference_no"], module="complaints")
     if row["community_issue_id"]:
         transition_community_issue(conn, row["community_issue_id"], new_status, user["full_name"], remarks or None)
     else:
@@ -2452,7 +2575,7 @@ def bulk_update_complaints(user):
             for report in affected:
                 dbh.log_action(
                     conn, user, f"Updated complaint status to {action}", target=report["reference_no"],
-                    details=(remarks + " " if remarks else "") + "(bulk action)",
+                    details="bulk action", module="complaints",
                 )
             done += len(affected)
             continue
@@ -2466,7 +2589,7 @@ def bulk_update_complaints(user):
         if action == "Resolved":
             restore_resolved_concern_slot(conn, row)
         dbh.log_action(conn, user, f"Updated complaint status to {action}", target=row["reference_no"],
-                       details=(remarks + " " if remarks else "") + "(bulk action)")
+                       details="bulk action", module="complaints")
         dbh.log_status(conn, "complaint", row["id"], action, user["full_name"], remarks or None)
         dbh.notify(conn, row["resident_id"],
                    f"Your complaint {row['reference_no']} status changed to {action}.",
@@ -2490,9 +2613,17 @@ def _residents_query(user):
     q = request.args.get("q", "").strip()
     address = request.args.get("address", "").strip()
     purok = request.args.get("purok", "").strip()          # "3", "none", or "" (all)
-    status = request.args.get("status", "").strip()        # "active" / "inactive" / "" (all) - admin only
-    query = "SELECT * FROM users WHERE role='resident'"
+    status = request.args.get("status", "").strip()        # active / inactive / archived / all
+    query = ("SELECT id,full_name,email,address,contact_number,status,is_archived,"
+             "created_at,profile_picture FROM users WHERE role='resident'")
     params = []
+    if is_admin:
+        if status == "archived":
+            query += " AND is_archived=1"
+        else:
+            query += " AND is_archived=0"
+    else:
+        query += " AND is_archived=0"
     if q:
         query += " AND (full_name LIKE ? OR email LIKE ?)"
         params += [f"%{q}%", f"%{q}%"]
@@ -2503,7 +2634,7 @@ def _residents_query(user):
         query += " AND status=?"
         params.append(status)
     else:
-        status = ""
+        status = status if is_admin and status == "archived" else ""
     query += " ORDER BY full_name ASC"
     rows = conn.execute(query, params).fetchall()
     puroks = dbh.purok_options(conn)
@@ -2652,6 +2783,140 @@ def admin_residents(user):
     return _residents_query(user)
 
 
+@app.route("/admin/residents/new", methods=["GET", "POST"])
+@login_required("admin")
+def create_resident(user):
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        address = request.form.get("address", "").strip()
+        raw_contact = request.form.get("contact_number", "").strip()
+        contact = _normalize_ph_mobile(raw_contact) if raw_contact else None
+        password = request.form.get("password", "")
+        conn = dbh.get_db()
+        error = None
+        if not full_name or len(full_name) > 120 or not valid_email(email):
+            error = "Enter a name (up to 120 characters) and valid email address."
+        elif len(address) > 500:
+            error = "Address must be 500 characters or fewer."
+        elif raw_contact and not contact:
+            error = "Enter a valid Philippine mobile number."
+        elif not valid_password(password):
+            error = "Password must be at least 8 characters and include a letter and a number."
+        elif conn.execute("SELECT id FROM users WHERE lower(email)=?", (email,)).fetchone():
+            error = "An account with this email already exists."
+        if error:
+            conn.close()
+            flash(error, "error")
+            return render_template("admin/resident_form.html", resident=None)
+        cur = conn.execute(
+            "INSERT INTO users (full_name,email,password_hash,role,address,contact_number) "
+            "VALUES (?,?,?,'resident',?,?)",
+            (full_name, email, generate_password_hash(password), address or None, contact),
+        )
+        conn.execute("INSERT INTO resident_concern_allowances (user_id,remaining) VALUES (?,?)",
+                     (cur.lastrowid, COMPLAINT_ALLOWANCE_MAX))
+        _audit(conn, user, "Created resident account", target=email, module="accounts")
+        conn.commit()
+        conn.close()
+        flash("Resident account created.", "success")
+        return redirect(url_for("admin_residents"))
+    return render_template("admin/resident_form.html", resident=None)
+
+
+@app.route("/admin/residents/<int:resident_id>")
+@login_required("admin")
+def view_resident(user, resident_id):
+    conn = dbh.get_db()
+    resident = conn.execute(
+        "SELECT id,full_name,email,address,contact_number,status,is_archived,created_at "
+        "FROM users WHERE id=? AND role='resident'", (resident_id,),
+    ).fetchone()
+    conn.close()
+    if not resident:
+        abort(404)
+    return render_template("admin/resident_detail.html", resident=resident)
+
+
+@app.route("/admin/residents/<int:resident_id>/edit", methods=["GET", "POST"])
+@login_required("admin")
+def edit_resident(user, resident_id):
+    conn = dbh.get_db()
+    resident = conn.execute(
+        "SELECT id,full_name,email,address,contact_number,status,is_archived,created_at "
+        "FROM users WHERE id=? AND role='resident'", (resident_id,),
+    ).fetchone()
+    if not resident:
+        conn.close()
+        abort(404)
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        address = request.form.get("address", "").strip()
+        raw_contact = request.form.get("contact_number", "").strip()
+        contact = _normalize_ph_mobile(raw_contact) if raw_contact else None
+        duplicate = conn.execute(
+            "SELECT id FROM users WHERE lower(email)=? AND id<>?", (email, resident_id)
+        ).fetchone()
+        error = None
+        if not full_name or len(full_name) > 120 or not valid_email(email):
+            error = "Enter a name (up to 120 characters) and valid email address."
+        elif len(address) > 500:
+            error = "Address must be 500 characters or fewer."
+        elif raw_contact and not contact:
+            error = "Enter a valid Philippine mobile number."
+        elif duplicate:
+            error = "An account with this email already exists."
+        if error:
+            conn.close()
+            flash(error, "error")
+            return render_template("admin/resident_form.html", resident=resident)
+        conn.execute(
+            "UPDATE users SET full_name=?,email=?,address=?,contact_number=? WHERE id=?",
+            (full_name, email, address or None, contact, resident_id),
+        )
+        _audit(conn, user, "Updated resident account", target=email, module="accounts")
+        conn.commit()
+        conn.close()
+        flash("Resident details updated.", "success")
+        return redirect(url_for("admin_residents"))
+    conn.close()
+    return render_template("admin/resident_form.html", resident=resident)
+
+
+@app.route("/admin/residents/<int:resident_id>/archive", methods=["POST"])
+@login_required("admin")
+def archive_resident(user, resident_id):
+    conn = dbh.get_db()
+    resident = conn.execute("SELECT * FROM users WHERE id=? AND role='resident'", (resident_id,)).fetchone()
+    if not resident:
+        conn.close()
+        abort(404)
+    conn.execute("UPDATE users SET is_archived=1,archived_at=datetime('now'),status='inactive' WHERE id=?",
+                 (resident_id,))
+    _audit(conn, user, "Archived resident account", target=resident["email"], module="accounts")
+    conn.commit()
+    conn.close()
+    flash("Resident archived. Historical requests and complaints are retained.", "success")
+    return redirect(url_for("admin_residents", status="archived"))
+
+
+@app.route("/admin/residents/<int:resident_id>/restore", methods=["POST"])
+@login_required("admin")
+def restore_resident(user, resident_id):
+    conn = dbh.get_db()
+    resident = conn.execute("SELECT * FROM users WHERE id=? AND role='resident'", (resident_id,)).fetchone()
+    if not resident:
+        conn.close()
+        abort(404)
+    conn.execute("UPDATE users SET is_archived=0,archived_at=NULL WHERE id=?", (resident_id,))
+    _audit(conn, user, "Restored resident account", target=resident["email"], module="accounts")
+    conn.commit()
+    conn.close()
+    flash("Resident restored. Activate the account separately when appropriate.", "success")
+    return redirect(url_for("admin_residents", status="inactive"))
+
+
 @app.route("/admin/staff", methods=["GET", "POST"])
 @login_required("admin")
 def admin_staff(user):
@@ -2681,12 +2946,12 @@ def admin_staff(user):
             )
             dbh.log_action(conn, user, "Created staff account", target=email, details=f"office={office}")
             conn.commit()
-            flash(f"Staff account created for {full_name}. Temporary password: {temp_pw}", "success")
+            flash(f"Staff account created for {full_name}. The staff member can set their own sign-in password using Forgot Password.", "success")
         conn.close()
         return redirect(url_for("admin_staff"))
 
     rows = conn.execute(
-        "SELECT u.*,"
+        "SELECT u.id,u.full_name,u.email,u.profile_picture,u.contact_number,u.office,u.status,u.created_at,"
         " (SELECT COUNT(*) FROM requests r WHERE r.assigned_staff_id=u.id "
         "AND r.status NOT IN ('Completed','Rejected')) AS active_request_count,"
         " (SELECT COUNT(*) FROM complaints c WHERE c.assigned_staff_id=u.id "
@@ -2720,10 +2985,7 @@ def update_account_mobile(user, account_id):
     if user["role"] == "staff" and account["role"] != "resident":
         conn.close()
         abort(403)
-    if account["role"] == "admin" and not (
-        user["email"].strip().lower() == FOUNDING_ADMIN_EMAIL
-        and int(user["is_super_admin"] or 0) == 1
-    ):
+    if account["role"] == "admin" and not is_founding_admin(user):
         conn.close()
         abort(403)
     return_endpoint = {
@@ -2793,7 +3055,7 @@ def toggle_staff(user, staff_id):
 @login_required("admin")
 def toggle_resident(user, resident_id):
     conn = dbh.get_db()
-    row = conn.execute("SELECT * FROM users WHERE id=? AND role='resident'", (resident_id,)).fetchone()
+    row = conn.execute("SELECT * FROM users WHERE id=? AND role='resident' AND is_archived=0", (resident_id,)).fetchone()
     if not row:
         conn.close()
         abort(404)
@@ -2823,7 +3085,7 @@ def reset_staff_password(user, staff_id):
     dbh.log_action(conn, user, "Reset staff password", target=row["email"])
     conn.commit()
     conn.close()
-    flash(f"Password reset for {row['full_name']}. New temporary password: {temp_pw}", "success")
+    flash(f"Sign-in credentials reset for {row['full_name']}. The staff member can set a new password using Forgot Password.", "success")
     return redirect(url_for("admin_staff"))
 
 
@@ -2832,10 +3094,7 @@ def reset_staff_password(user, staff_id):
 def admin_administrators(user):
     # Supabase's deployed users table has the legacy integer flag but no
     # is_founding_admin column. Pin the sole elevated designation to Ralph.
-    is_founder = (
-        user["email"].strip().lower() == FOUNDING_ADMIN_EMAIL
-        and int(user["is_super_admin"] or 0) == 1
-    )
+    is_founder = is_founding_admin(user)
     if not is_founder:
         abort(403)
     conn = dbh.get_db()
@@ -2876,14 +3135,56 @@ def admin_administrators(user):
         return redirect(url_for("admin_administrators"))
 
     rows = conn.execute(
-        "SELECT id, full_name, email, role, is_super_admin, created_at, contact_number "
-        "FROM users WHERE role='admin' ORDER BY created_at ASC"
+        "SELECT id, full_name, email, role, is_super_admin, "
+        "CASE WHEN is_founding_admin=1 OR (lower(email)=? AND is_super_admin=1) THEN 1 ELSE 0 END is_founding_admin, status, "
+        "is_archived, created_at, contact_number "
+        "FROM users WHERE role='admin' ORDER BY created_at ASC", (FOUNDING_ADMIN_EMAIL,)
     ).fetchall()
     conn.close()
     return render_template(
         "admin/administrators.html", rows=rows,
         can_manage_admins=True,
     )
+
+
+@app.route("/admin/administrators/<int:account_id>/edit", methods=["GET", "POST"])
+@login_required("admin")
+def edit_administrator(user, account_id):
+    if not is_founding_admin(user):
+        abort(403)
+    conn = dbh.get_db()
+    account = conn.execute(
+        "SELECT id,full_name,email,recovery_email,contact_number,role,is_founding_admin,is_super_admin "
+        "FROM users WHERE id=? AND role='admin'", (account_id,),
+    ).fetchone()
+    if not account:
+        conn.close()
+        abort(404)
+    if is_founding_admin(account):
+        conn.close()
+        abort(403)
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        email = request.form.get("email", "").strip().lower()
+        recovery_email = request.form.get("recovery_email", "").strip().lower()
+        raw_contact = request.form.get("contact_number", "").strip()
+        contact = _normalize_ph_mobile(raw_contact) if raw_contact else None
+        duplicate = conn.execute("SELECT id FROM users WHERE lower(email)=? AND id<>?",
+                                 (email, account_id)).fetchone()
+        if (not full_name or len(full_name) > 120 or not valid_email(email)
+                or not valid_email(recovery_email) or (raw_contact and not contact) or duplicate):
+            conn.close()
+            flash("Enter valid name, email, recovery email, and mobile details.", "error")
+            return render_template("admin/administrator_form.html", account=account)
+        conn.execute("UPDATE users SET full_name=?,email=?,recovery_email=?,contact_number=? WHERE id=?",
+                     (full_name, email, recovery_email, contact, account_id))
+        _audit(conn, user, "Updated administrator account", target=email, module="accounts")
+        conn.commit()
+        conn.close()
+        flash("Administrator details updated. MFA remains required.", "success")
+        return redirect(url_for("admin_administrators"))
+    conn.close()
+    return render_template("admin/administrator_form.html", account=account)
 
 
 @app.route("/admin/requests")
@@ -2931,9 +3232,45 @@ def admin_complaints(user):
 @login_required("admin")
 def audit_logs(user):
     conn = dbh.get_db()
-    rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 300").fetchall()
+    q = request.args.get("q", "").strip()
+    module = request.args.get("module", "").strip()
+    actor = request.args.get("actor", "").strip()
+    start = request.args.get("start", "").strip()
+    end = request.args.get("end", "").strip()
+    try:
+        parsed_start = datetime.strptime(start, "%Y-%m-%d").date() if start else None
+        parsed_end = datetime.strptime(end, "%Y-%m-%d").date() if end else None
+    except ValueError:
+        abort(400, description="Audit log dates must use YYYY-MM-DD.")
+    if parsed_start and parsed_end and parsed_end < parsed_start:
+        abort(400, description="The end date must be on or after the start date.")
+    page = max(1, request.args.get("page", 1, type=int))
+    clauses, params = [], []
+    if q:
+        clauses.append("(action LIKE ? OR COALESCE(target,'') LIKE ? OR COALESCE(details,'') LIKE ?)")
+        params.extend([f"%{q}%"] * 3)
+    if module:
+        clauses.append("module=?")
+        params.append(module)
+    if actor:
+        clauses.append("(COALESCE(actor_name,'') LIKE ? OR CAST(actor_id AS TEXT)=?)")
+        params.extend((f"%{actor}%", actor))
+    if start:
+        clauses.append("created_at>=?")
+        params.append(start + " 00:00:00")
+    if end:
+        clauses.append("created_at<?")
+        params.append((datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00"))
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    count = conn.execute("SELECT COUNT(*) count FROM audit_logs" + where, params).fetchone()["count"]
+    rows = conn.execute("SELECT * FROM audit_logs" + where +
+                        " ORDER BY created_at DESC,id DESC LIMIT 50 OFFSET ?",
+                        params + [(page - 1) * 50]).fetchall()
+    modules = conn.execute("SELECT DISTINCT module FROM audit_logs WHERE module IS NOT NULL ORDER BY module").fetchall()
     conn.close()
-    return render_template("admin/audit_logs.html", rows=rows)
+    return render_template("admin/audit_logs.html", rows=rows, q=q, module=module, actor=actor,
+                           start=start, end=end, modules=[r["module"] for r in modules],
+                           page=page, pages=max(1, math.ceil(count / 50)), total=count)
 
 
 SETTINGS_FIELDS = [
@@ -2974,18 +3311,126 @@ def admin_settings(user):
                            backup_every=dbh.AUTO_BACKUP_EVERY_HOURS)
 
 
+@app.route("/admin/settings/users", methods=["GET", "POST"])
+@login_required("admin")
+def user_role_administration(user):
+    founder = is_founding_admin(user)
+    if request.method == "POST":
+        account_id = request.form.get("account_id", type=int)
+        operation = request.form.get("operation", "")
+        conn = dbh.get_db()
+        target = conn.execute("SELECT * FROM users WHERE id=?", (account_id,)).fetchone()
+        if not target:
+            conn.close()
+            abort(404)
+        protected = is_founding_admin(target)
+        if protected or (target["role"] == "admin" and not founder):
+            conn.close()
+            abort(403)
+        if operation == "role":
+            new_role = request.form.get("role", "")
+            allowed = {"resident", "staff", "admin"} if founder else {"resident", "staff"}
+            office = request.form.get("office", "").strip()
+            if new_role not in allowed or (new_role == "staff" and office not in OFFICES):
+                conn.close()
+                abort(400)
+            conn.execute("UPDATE users SET role=?,office=?,position=? WHERE id=?",
+                         (new_role, office if new_role == "staff" else None,
+                          OFFICES[office]["label"] if new_role == "staff" else None, account_id))
+            action = "Changed user role"
+            details = f"role={target['role']} -> {new_role}"
+        elif operation == "status":
+            new_status = "inactive" if target["status"] == "active" else "active"
+            conn.execute("UPDATE users SET status=? WHERE id=?", (new_status, account_id))
+            action, details = "Changed account status", f"status={target['status']} -> {new_status}"
+        elif operation == "archive" and not int(target.get("is_archived") or 0):
+            conn.execute("UPDATE users SET is_archived=1,archived_at=datetime('now'),status='inactive' WHERE id=?",
+                         (account_id,))
+            action, details = "Archived account", f"role={target['role']}"
+        elif operation == "restore" and int(target.get("is_archived") or 0):
+            conn.execute("UPDATE users SET is_archived=0,archived_at=NULL WHERE id=?", (account_id,))
+            action, details = "Restored account", f"role={target['role']}"
+        else:
+            conn.close()
+            abort(400)
+        _audit(conn, user, action, target=target["email"], details=details, module="accounts")
+        conn.commit()
+        conn.close()
+        flash("Account updated.", "success")
+        return redirect(url_for("user_role_administration"))
+
+    role = request.args.get("role", "")
+    status = request.args.get("status", "active")
+    term = request.args.get("q", "").strip()
+    clauses, params = [], []
+    if role in {"resident", "staff", "admin"}:
+        clauses.append("role=?")
+        params.append(role)
+    if status == "archived":
+        clauses.append("is_archived=1")
+    else:
+        clauses.append("is_archived=0")
+        if status in {"active", "inactive"}:
+            clauses.append("status=?")
+            params.append(status)
+    if term:
+        clauses.append("(full_name LIKE ? OR email LIKE ?)")
+        params.extend((f"%{term}%", f"%{term}%"))
+    where = " WHERE " + " AND ".join(clauses)
+    conn = dbh.get_db()
+    rows = conn.execute(
+        "SELECT id,full_name,email,role,office,status,is_archived,is_founding_admin,created_at "
+        "FROM users" + where + " ORDER BY role,full_name LIMIT 500", params,
+    ).fetchall()
+    conn.close()
+    return render_template("admin/user_roles.html", rows=rows, offices=OFFICES,
+                           selected_role=role, selected_status=status, q=term, founder=founder)
+
+
+@app.route("/admin/settings/security")
+@login_required("admin")
+def security_settings(user):
+    conn = dbh.get_db()
+    admins = conn.execute("SELECT COUNT(*) count FROM users WHERE role='admin' AND status='active' AND is_archived=0").fetchone()["count"]
+    locked = conn.execute("SELECT COUNT(*) count FROM users WHERE locked_until IS NOT NULL AND status='active'").fetchone()["count"]
+    conn.close()
+    return render_template("admin/security_settings.html", founder=is_founding_admin(user),
+                           active_admins=admins, locked_accounts=locked,
+                           max_failed_logins=dbh.MAX_FAILED_LOGINS,
+                           lockout_minutes=dbh.LOCKOUT_MINUTES)
+
+
+@app.route("/admin/settings/backups")
+@login_required("admin")
+def backup_management(user):
+    if not is_founding_admin(user):
+        abort(403)
+    backups = [dbh.backup_info(name) for name in dbh.list_backups()]
+    postgres = dbh.get_backend() == "postgres"
+    pg_dump_available = bool(os.environ.get("PG_DUMP_PATH") or shutil.which("pg_dump"))
+    return render_template("admin/backups.html", backups=backups, postgres=postgres,
+                           pg_dump_available=pg_dump_available)
+
+
 @app.route("/admin/settings/backup", methods=["POST"])
 @login_required("admin")
 def create_backup(user):
     """Take a fresh backup right now and download it."""
+    if not is_founding_admin(user):
+        abort(403)
     try:
         path = dbh.backup_database()
     except (OSError, RuntimeError) as error:
         app.logger.error("Database backup failed: %s", error)
+        conn = dbh.get_db()
+        _audit(conn, user, "Database backup failed", module="backup", result="Failure",
+               details=type(error).__name__)
+        conn.commit()
+        conn.close()
         flash("The database backup could not be completed. Check server configuration.", "error")
         return redirect(url_for("admin_settings"))
     conn = dbh.get_db()
-    dbh.log_action(conn, user, "Downloaded database backup", target=os.path.basename(path))
+    _audit(conn, user, "Created and downloaded database backup", target=os.path.basename(path), module="backup")
     conn.commit()
     conn.close()
     return send_file(path, as_attachment=True, download_name=os.path.basename(path))
@@ -2995,10 +3440,12 @@ def create_backup(user):
 @login_required("admin")
 def download_backup(user, name):
     """Download one of the existing backups (name must be one we created)."""
+    if not is_founding_admin(user):
+        abort(403)
     if name not in dbh.list_backups():
         abort(404)
     conn = dbh.get_db()
-    dbh.log_action(conn, user, "Downloaded database backup", target=name)
+    _audit(conn, user, "Downloaded database backup", target=name, module="backup")
     conn.commit()
     conn.close()
     return send_file(os.path.join(dbh.backup_dir(), name), as_attachment=True, download_name=name)
@@ -3319,6 +3766,10 @@ def _build_report(conn, user, filters):
     pending_complaints = _report_count(
         conn, user, "complaints", filters, bounds, " AND status='Pending'"
     )
+    ongoing_complaints = _report_count(
+        conn, user, "complaints", filters, bounds,
+        " AND status IN ('Under Review','Scheduled')",
+    )
     resolved_complaints = _report_count(
         conn, user, "complaints", filters, bounds, " AND status IN ('Resolved','Closed')"
     )
@@ -3384,6 +3835,7 @@ def _build_report(conn, user, filters):
         "pending_requests": pending_requests,
         "verified_complaints": verified_complaints,
         "pending_complaints": pending_complaints,
+        "ongoing_complaints": ongoing_complaints,
         "resolved_complaints": resolved_complaints,
         "rejected": rejected,
         "average_complaints": round(total_complaints / month_count, 1),
@@ -3472,6 +3924,10 @@ def _status_doughnut(rows, colors):
 @login_required("staff", "admin")
 def admin_reports(user):
     if user["role"] == "admin":
+        conn = dbh.get_db()
+        _audit(conn, user, "Generated report", target="analytics index", module="reports")
+        conn.commit()
+        conn.close()
         return render_template("admin/reports_index.html")
     if user["role"] == "staff" and not (
         handled_request_types(user) or can_handle_complaints(user)
@@ -3482,11 +3938,14 @@ def admin_reports(user):
     conn = dbh.get_db()
     try:
         report = _build_report(conn, user, filters)
+        barangay_name = dbh.get_setting(conn, "barangay_name", "BarangayConnect")
     except ValueError as exc:
         filter_error = str(exc)
         filters.update(range="year", start_date="", end_date="")
         report = _build_report(conn, user, filters)
     finally:
+        _audit(conn, user, "Generated report", target="analytics", module="reports")
+        conn.commit()
         conn.close()
     export_urls = {
         fmt: url_for("export_report", **filters, format=fmt)
@@ -3808,9 +4267,12 @@ def export_report(user):
     conn = dbh.get_db()
     try:
         report = _build_report(conn, user, filters)
+        barangay_name = dbh.get_setting(conn, "barangay_name", "BarangayConnect")
     except ValueError as exc:
         conn.close()
         abort(400, description=str(exc))
+    _audit(conn, user, "Exported report", target=f"analytics.{fmt}", module="reports")
+    conn.commit()
     conn.close()
 
     sections = [
@@ -3822,11 +4284,13 @@ def export_report(user):
         ("Monthly Requests", report["request_months"]),
     ]
     summary = [
+        ("Barangay", barangay_name),
         ("Total Complaints", report["total_complaints"]),
         ("Total Document Requests", report["total_requests"]),
         ("Total Transactions", report["total_transactions"]),
         ("Verified Complaints", report["verified_complaints"]),
         ("Pending Complaints", report["pending_complaints"]),
+        ("Ongoing Complaints", report["ongoing_complaints"]),
         ("Resolved Complaints", report["resolved_complaints"]),
         ("Approved Requests", report["approved_requests"]),
         ("Pending Requests", report["pending_requests"]),
@@ -3870,14 +4334,19 @@ def export_report(user):
         from reportlab.lib.styles import getSampleStyleSheet
         from reportlab.lib.units import inch
         from reportlab.platypus import (
-            Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+            Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
         )
         buf = io.BytesIO()
         doc = SimpleDocTemplate(buf, pagesize=letter, rightMargin=0.55 * inch,
                                 leftMargin=0.55 * inch, topMargin=0.55 * inch,
                                 bottomMargin=0.55 * inch)
         styles = getSampleStyleSheet()
-        story = [
+        story = []
+        seal = os.path.join(BASE_DIR, "static", "images", "barangay-seal.png")
+        if os.path.isfile(seal):
+            story.append(Image(seal, width=.65*inch, height=.65*inch, kind="proportional"))
+        story.extend([
+            Paragraph(barangay_name, styles["Heading2"]),
             Paragraph("BarangayConnect Analytics Report", styles["Title"]),
             Paragraph(
                 f"{report['range_label']} · "
@@ -3890,7 +4359,7 @@ def export_report(user):
                 styles["Normal"],
             ),
             Spacer(1, 12),
-        ]
+        ])
         summary_table = Table([["Summary Metric", "Value"]] + [
             [label, str(value)] for label, value in summary
         ], repeatRows=1, hAlign="LEFT")
@@ -3922,6 +4391,11 @@ def export_report(user):
                 ("PADDING", (0, 0), (-1, -1), 5),
             ]))
             story.extend([table, Spacer(1, 10)])
+        story.extend([Spacer(1, 18), Table([
+            ["Prepared by", "Approved by"],
+            ["\n\n____________________________", "\n\n____________________________"],
+            [user["full_name"], "Barangay Captain/Chairman"],
+        ], colWidths=[3.1*inch, 3.1*inch])])
         doc.build(story)
         buf.seek(0)
         return send_file(buf, mimetype="application/pdf", as_attachment=True,

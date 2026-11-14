@@ -270,7 +270,8 @@ Cutover checklist:
 
 - Supabase-managed backups and point-in-time recovery depend on the selected
   Supabase plan. Confirm the plan's retention and restore procedure before
-  cutover, and test recovery against a disposable project.
+  cutover, and test recovery against a disposable project. See the current
+  [Supabase backup guide](https://supabase.com/docs/guides/platform/backups).
 - Admin → Settings can create a manual PostgreSQL custom-format `pg_dump`
   download when `pg_dump` is installed (or `PG_DUMP_PATH` is configured).
   Render's local filesystem is ephemeral; download backups to a protected,
@@ -286,5 +287,11 @@ Cutover checklist:
 - If PostgreSQL must be restored, use the Supabase plan's documented recovery
   process or a verified `pg_dump` backup against a separate restore target
   first. Do not restore over a live database without an approved recovery plan.
+- This Render configuration has no persistent disk. Render documents that
+  service-local files are ephemeral, so generated dump files are temporary;
+  see [Render persistent disks](https://render.com/docs/disks). The application
+  does not provide an automated restore endpoint. Use Supabase's dashboard or
+  documented CLI/operator recovery after validation, reauthentication, a
+  maintenance window, and a fresh pre-restore snapshot.
 - Never run `seed.py`, delete/recreate a database, or use production as a test
   target during recovery.

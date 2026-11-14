@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS users (
     office TEXT CHECK (office IN ('treasurer', 'secretary', 'bpso')),
     position TEXT,
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    archived_at TEXT,
     is_super_admin INTEGER NOT NULL DEFAULT 0,
     is_founding_admin INTEGER NOT NULL DEFAULT 0,
     must_reset_pw INTEGER NOT NULL DEFAULT 0,
@@ -136,6 +138,10 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     action TEXT NOT NULL,
     target TEXT,
     details TEXT,
+    actor_role TEXT,
+    module TEXT,
+    result TEXT NOT NULL DEFAULT 'Success',
+    ip_address TEXT,
     created_at TEXT NOT NULL DEFAULT (to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'))
 );
 
