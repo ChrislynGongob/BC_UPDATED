@@ -314,7 +314,8 @@ def current_user():
     conn = dbh.get_db()
     row = conn.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
     conn.close()
-    if row and (row["status"] != "active" or int(row["is_archived"] or 0)):
+    if row and (_user_value(row, "status", "active") != "active"
+                or int(_user_value(row, "is_archived", 0) or 0)):
         session.clear()
         row = None
     g._current_user = row
@@ -457,12 +458,22 @@ def login_required(*roles):
 
 def is_founding_admin(user):
     """Recognize the designated Founding Admin across legacy flag schemas."""
-    if not user or user["role"] != "admin":
+    if not user or _user_value(user, "role") != "admin":
         return False
-    return bool(int(user["is_founding_admin"] or 0)) or (
-        user["email"].strip().lower() == FOUNDING_ADMIN_EMAIL
-        and bool(int(user["is_super_admin"] or 0))
+    return bool(int(_user_value(user, "is_founding_admin", 0) or 0)) or (
+        (_user_value(user, "email", "") or "").strip().lower() == FOUNDING_ADMIN_EMAIL
+        and bool(int(_user_value(user, "is_super_admin", 0) or 0))
     )
+
+
+def _user_value(user, key, default=None):
+    """Read a row field safely when a legacy PostgreSQL schema lacks a newer column."""
+    if user is None:
+        return default
+    try:
+        return user[key]
+    except (KeyError, IndexError, TypeError):
+        return default
 
 
 def _audit(conn, actor, action, target=None, details=None, *, module=None, result="Success"):
@@ -3379,8 +3390,10 @@ def user_role_administration(user):
     where = " WHERE " + " AND ".join(clauses)
     conn = dbh.get_db()
     rows = conn.execute(
-        "SELECT id,full_name,email,role,office,status,is_archived,is_founding_admin,created_at "
-        "FROM users" + where + " ORDER BY role,full_name LIMIT 500", params,
+        "SELECT id,full_name,email,role,office,status,is_archived,"
+        "CASE WHEN is_founding_admin=1 OR (lower(email)=? AND is_super_admin=1) "
+        "THEN 1 ELSE 0 END AS is_founding_admin,created_at FROM users" + where +
+        " ORDER BY role,full_name LIMIT 500", [FOUNDING_ADMIN_EMAIL, *params],
     ).fetchall()
     conn.close()
     return render_template("admin/user_roles.html", rows=rows, offices=OFFICES,

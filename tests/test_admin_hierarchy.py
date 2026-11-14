@@ -98,6 +98,15 @@ class AdminHierarchyTests(unittest.TestCase):
         conn.close()
         self.assertEqual(self.create_admin(self.super_id).status_code, 403)
 
+    def test_founder_check_falls_back_for_legacy_schema_without_marker(self):
+        legacy_founder = {
+            "role": "admin", "email": "ralphpatrickga@gmail.com", "is_super_admin": 1,
+        }
+        self.assertTrue(A.is_founding_admin(legacy_founder))
+        self.assertFalse(A.is_founding_admin({
+            "role": "admin", "email": "other@example.test", "is_super_admin": 1,
+        }))
+
     def test_only_founder_can_open_management_page(self):
         self.set_session(self.founder_id)
         self.assertEqual(self.client.get("/admin/administrators").status_code, 200)
