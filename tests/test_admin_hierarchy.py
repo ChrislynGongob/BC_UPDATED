@@ -260,18 +260,12 @@ class AdminHierarchyTests(unittest.TestCase):
         self.assertEqual(self.client.post("/admin/settings/users", data={
             "account_id": resident_id, "operation": "restore",
         }).status_code, 302)
-        conn = dbh.get_db()
-        role_user_id = conn.execute(
-            "INSERT INTO users(full_name,email,password_hash,role,status) VALUES(?,?,?,'resident','active')",
-            ("Role Change User", "role-change@example.test", generate_password_hash("ResidentPassword123")),
-        ).lastrowid
-        conn.commit()
-        conn.close()
+        role_user_id = self.insert_bpso_staff()
         self.assertEqual(self.client.post("/admin/settings/users", data={
-            "account_id": role_user_id, "operation": "role", "role": "staff", "office": "bpso",
+            "account_id": role_user_id, "operation": "role", "role": "resident", "office": "bpso",
         }).status_code, 302)
         conn = dbh.get_db()
-        self.assertEqual(conn.execute("SELECT role,office FROM users WHERE id=?", (role_user_id,)).fetchone()[0:2], ("staff", "bpso"))
+        self.assertEqual(conn.execute("SELECT role,office FROM users WHERE id=?", (role_user_id,)).fetchone()[0:2], ("resident", None))
         conn.close()
         self.set_session(self.regular_id)
         self.assertEqual(self.client.get("/admin/settings/users").status_code, 200)
@@ -281,7 +275,14 @@ class AdminHierarchyTests(unittest.TestCase):
         conn.close()
         regular_page = self.client.get("/admin/settings/users").get_data(as_text=True)
         self.assertNotIn("ralphpatrickga@gmail.com", regular_page)
-        staff_id = self.insert_bpso_staff()
+        conn = dbh.get_db()
+        staff_id = conn.execute(
+            "INSERT INTO users(full_name,email,password_hash,role,office,status) "
+            "VALUES('Another BPSO Staff','another-bpso@example.test',?,'staff','bpso','active')",
+            (generate_password_hash("SafePassword123"),),
+        ).lastrowid
+        conn.commit()
+        conn.close()
         self.set_session(staff_id)
         self.assertEqual(self.client.get("/admin/settings/users").status_code, 403)
 
@@ -438,19 +439,23 @@ class AdminHierarchyTests(unittest.TestCase):
         self.set_session(self.founder_id)
         conn = dbh.get_db()
         deletable_id = conn.execute(
-            "INSERT INTO users(full_name,email,password_hash,role) VALUES(?,?,?,'resident')",
+            "INSERT INTO users(full_name,email,password_hash,role,office) VALUES(?,?,?,'staff','bpso')",
             ("Delete Candidate", "delete-candidate@example.test", generate_password_hash("SafePassword123")),
         ).lastrowid
         actor = conn.execute("SELECT * FROM users WHERE id=?", (deletable_id,)).fetchone()
         dbh.log_action(conn, actor, "Test resident action", target="delete-candidate@example.test", module="accounts")
         dbh.notify(conn, deletable_id, "Resident notification")
-        blocked_id = conn.execute(
+        linked_resident_id = conn.execute(
             "INSERT INTO users(full_name,email,password_hash,role) VALUES(?,?,?,'resident')",
             ("Linked Resident", "linked-resident@example.test", generate_password_hash("SafePassword123")),
         ).lastrowid
+        blocked_id = conn.execute(
+            "INSERT INTO users(full_name,email,password_hash,role,office) VALUES(?,?,?,'staff','bpso')",
+            ("Linked Staff", "linked-staff@example.test", generate_password_hash("SafePassword123")),
+        ).lastrowid
         conn.execute(
-            "INSERT INTO requests(reference_no,resident_id,request_type) VALUES(?,?,?)",
-            ("DELETE-GUARD-001", blocked_id, "Barangay Clearance"),
+            "INSERT INTO requests(reference_no,resident_id,request_type,assigned_staff_id) VALUES(?,?,?,?)",
+            ("DELETE-GUARD-001", linked_resident_id, "Barangay Clearance", blocked_id),
         )
         conn.commit()
         conn.close()
@@ -477,7 +482,7 @@ class AdminHierarchyTests(unittest.TestCase):
         self.assertIn(b"cannot be deleted", self.client.get(blocked.location).data)
         conn = dbh.get_db()
         self.assertIsNotNone(conn.execute("SELECT id FROM users WHERE id=?", (blocked_id,)).fetchone())
-        self.assertEqual(conn.execute("SELECT COUNT(*) AS count FROM requests WHERE resident_id=?", (blocked_id,)).fetchone()["count"], 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) AS count FROM requests WHERE assigned_staff_id=?", (blocked_id,)).fetchone()["count"], 1)
         conn.close()
 
         protected = self.client.post("/admin/settings/users", data={
@@ -708,13 +713,99 @@ class AdminHierarchyTests(unittest.TestCase):
         self.set_session(self.regular_id)
         self.assertEqual(self.client.post("/admin/settings/users", data={
             "account_id": resident_id, "operation": "role", "role": "admin",
-        }).status_code, 400)
+        }).status_code, 403)
+        conn = dbh.get_db()
+        denied = conn.execute(
+            "SELECT result FROM audit_logs WHERE action='Denied staff role change' "
+            "AND target='role@example.test' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(denied["result"], "Denied")
+
+        staff_id = self.insert_bpso_staff()
+        self.assertEqual(self.client.post("/admin/settings/users", data={
+            "account_id": staff_id, "operation": "role", "role": "resident", "office": "bpso",
+        }).status_code, 403)
+        conn = dbh.get_db()
+        self.assertEqual(conn.execute("SELECT role FROM users WHERE id=?", (staff_id,)).fetchone()[0], "staff")
+        conn.close()
+
+        self.set_session(self.founder_id)
+        denied_escalation = self.client.post("/admin/settings/users", data={
+            "account_id": staff_id, "operation": "role", "role": "admin", "office": "bpso",
+        })
+        self.assertEqual(denied_escalation.status_code, 400)
+        allowed_staff_change = self.client.post("/admin/settings/users", data={
+            "account_id": staff_id, "operation": "role", "role": "staff", "office": "treasurer",
+        })
+        self.assertEqual(allowed_staff_change.status_code, 302)
+        conn = dbh.get_db()
+        changed = conn.execute("SELECT role,office FROM users WHERE id=?", (staff_id,)).fetchone()
+        success_log = conn.execute(
+            "SELECT result FROM audit_logs WHERE action='Changed user role' AND target='bpso@example.test' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(tuple(changed), ("staff", "treasurer"))
+        self.assertEqual(success_log["result"], "Success")
+
+        for admin_id in (self.regular_id, self.founder_id):
+            self.assertEqual(self.client.post("/admin/settings/users", data={
+                "account_id": admin_id, "operation": "role", "role": "staff", "office": "bpso",
+            }).status_code, 403)
+        conn = dbh.get_db()
+        denied_admin_attempts = conn.execute(
+            "SELECT COUNT(*) AS count FROM audit_logs WHERE action='Denied staff role change' "
+            "AND result='Denied' AND target IN ('regular@example.test','ralphpatrickga@gmail.com')"
+        ).fetchone()["count"]
+        conn.close()
+        self.assertEqual(denied_admin_attempts, 2)
+
         self.assertEqual(self.client.post("/admin/settings/users", data={
             "account_id": self.founder_id, "operation": "status",
         }).status_code, 403)
         conn = dbh.get_db()
         self.assertEqual(conn.execute("SELECT role FROM users WHERE id=?", (resident_id,)).fetchone()[0], "resident")
         conn.close()
+
+    def test_resident_rows_have_no_role_controls_or_role_confirmation_modal(self):
+        self.set_session(self.founder_id)
+        resident_id = self.client.post("/admin/residents/new", data={
+            "full_name": "No Role Control Resident", "email": "no-role-control@example.test",
+            "password": "ResidentPassword123", "address": "Purok 7",
+        })
+        self.assertEqual(resident_id.status_code, 302)
+        conn = dbh.get_db()
+        resident_id = conn.execute("SELECT id FROM users WHERE email='no-role-control@example.test'").fetchone()["id"]
+        conn.close()
+        for url in ("/admin/settings/users?role=resident&status=all", "/admin/settings/users?status=all"):
+            html = self.client.get(url).get_data(as_text=True)
+            self.assertNotIn(f'for="role-{resident_id}"', html)
+            start = html.index("no-role-control@example.test")
+            resident_row = html[html.rfind("<tr>", 0, start):html.index("</tr>", start)]
+            self.assertNotIn("Change role", resident_row)
+            self.assertNotIn("Delete permanently", resident_row)
+        residents = self.client.get("/admin/settings/users?role=resident&status=all").get_data(as_text=True)
+        self.assertNotIn('id="um-role-confirm"', residents)
+        self.assertNotIn("Change role / office", residents)
+        self.assertIn("View No Role Control Resident", residents)
+
+        direct = self.client.post("/admin/settings/users", data={
+            "account_id": resident_id, "operation": "role", "role": "staff", "office": "bpso",
+        })
+        self.assertEqual(direct.status_code, 403)
+        delete_resident = self.client.post("/admin/settings/users", data={
+            "account_id": resident_id, "operation": "delete",
+        })
+        self.assertEqual(delete_resident.status_code, 403)
+        conn = dbh.get_db()
+        row = conn.execute("SELECT role FROM users WHERE id=?", (resident_id,)).fetchone()
+        log = conn.execute(
+            "SELECT result FROM audit_logs WHERE action='Denied staff role change' "
+            "AND target='no-role-control@example.test' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        self.assertEqual(row["role"], "resident")
+        self.assertEqual(log["result"], "Denied")
 
     def test_complaint_acknowledgement_is_private_and_does_not_resolve(self):
         conn = dbh.get_db()

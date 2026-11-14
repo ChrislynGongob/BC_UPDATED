@@ -3510,27 +3510,44 @@ def user_role_administration(user):
         conn = dbh.get_db()
         target = conn.execute("SELECT * FROM users WHERE id=?", (account_id,)).fetchone()
         if not target:
+            if operation == "role":
+                _audit(conn, user, "Denied staff role change", target=str(account_id),
+                       details="target account not found", module="accounts", result="Denied")
+                conn.commit()
             conn.close()
             abort(404)
-        protected = is_founding_admin(target)
-        if protected or (target["role"] == "admin" and not founder):
-            conn.close()
-            abort(403)
-        if target["id"] == user["id"]:
-            conn.close()
-            abort(403)
         if operation == "role":
+            if target["role"] != "staff" or not founder:
+                _audit(conn, user, "Denied staff role change", target=target["email"],
+                       details=f"target_role={target['role']}; actor_is_founder={int(founder)}",
+                       module="accounts", result="Denied")
+                conn.commit()
+                conn.close()
+                abort(403)
             new_role = request.form.get("role", "")
-            allowed = {"resident", "staff", "admin"} if founder else {"resident", "staff"}
             office = request.form.get("office", "").strip()
-            if new_role not in allowed or (new_role == "staff" and office not in OFFICES):
+            if new_role not in {"resident", "staff"} or (new_role == "staff" and office not in OFFICES):
+                _audit(conn, user, "Denied staff role change", target=target["email"],
+                       details=f"target_role=staff; requested_role={new_role}; office={office}",
+                       module="accounts", result="Denied")
+                conn.commit()
                 conn.close()
                 abort(400)
             conn.execute("UPDATE users SET role=?,office=?,position=?,auth_version=auth_version+1 WHERE id=?",
                          (new_role, office if new_role == "staff" else None,
                           OFFICES[office]["label"] if new_role == "staff" else None, account_id))
             action = "Changed user role"
-            details = f"role={target['role']} -> {new_role}"
+            details = f"role={target['role']} -> {new_role}; office={target['office']} -> {office if new_role == 'staff' else 'none'}"
+        else:
+            protected = is_founding_admin(target)
+            if protected or (target["role"] == "admin" and not founder):
+                conn.close()
+                abort(403)
+            if target["id"] == user["id"]:
+                conn.close()
+                abort(403)
+        if operation == "role":
+            pass
         elif operation == "status":
             new_status = "inactive" if target["status"] == "active" else "active"
             conn.execute("UPDATE users SET status=?,auth_version=auth_version+1 WHERE id=?", (new_status, account_id))
@@ -3543,6 +3560,9 @@ def user_role_administration(user):
             conn.execute("UPDATE users SET is_archived=0,archived_at=NULL,auth_version=auth_version+1 WHERE id=?", (account_id,))
             action, details = "Restored account", f"role={target['role']}"
         elif operation == "delete":
+            if target["role"] == "resident":
+                conn.close()
+                abort(403)
             linked_requests = conn.execute(
                 "SELECT COUNT(*) AS count FROM requests WHERE resident_id=? OR assigned_staff_id=?",
                 (account_id, account_id),
