@@ -1,5 +1,6 @@
 """Administrator hierarchy permissions and ownership transfer safety."""
 import os
+from io import BytesIO
 import sqlite3
 import tempfile
 import unittest
@@ -232,7 +233,8 @@ class AdminHierarchyTests(unittest.TestCase):
         resident_html = residents_page.get_data(as_text=True)
         self.assertIn("Manage Residents", resident_html)
         self.assertNotIn('name="status"', resident_html)
-        self.assertIn("style.css?v=4", resident_html)
+        self.assertIn("style.css?v=5", resident_html)
+        self.assertIn("No announcements available at the moment.", html)
 
         profile = self.client.get("/profile")
         self.assertEqual(profile.status_code, 200)
@@ -341,6 +343,135 @@ class AdminHierarchyTests(unittest.TestCase):
         for action in ("toggle", "archive", "restore"):
             self.assertEqual(self.client.post(f"/admin/residents/{resident_ids[0]}/{action}").status_code, 403)
         self.assertEqual(self.client.get("/admin/residents/new").status_code, 403)
+
+    def test_staff_dashboard_shows_only_latest_published_staff_announcements(self):
+        staff_id = self.insert_bpso_staff()
+        conn = dbh.get_db()
+        for index in range(7):
+            conn.execute(
+                "INSERT INTO announcements(title,message,posted_by_name,audience,is_published) VALUES (?,?,?,?,1)",
+                (f"Staff bulletin {index}", f"Announcement text {index}", "Barangay Admin", "all"),
+            )
+        conn.execute(
+            "INSERT INTO announcements(title,message,audience,is_published) VALUES ('Resident-only bulletin','Resident notice','resident',1)"
+        )
+        conn.execute(
+            "INSERT INTO announcements(title,message,audience,is_published) VALUES ('Draft bulletin','Hidden draft','staff',0)"
+        )
+        conn.execute(
+            "INSERT INTO announcements(title,message,audience,is_published,is_archived) VALUES ('Archived bulletin','Hidden archive','staff',1,1)"
+        )
+        conn.commit()
+        conn.close()
+
+        self.set_session(staff_id)
+        response = self.client.get("/staff/dashboard")
+        self.assertEqual(response.status_code, 200)
+        html = response.get_data(as_text=True)
+        self.assertIn("Barangay Announcements", html)
+        self.assertIn("View Details", html)
+        self.assertIn("Staff bulletin 6", html)
+        self.assertIn("Staff bulletin 2", html)
+        self.assertNotIn("Resident-only bulletin", html)
+        self.assertNotIn("Staff bulletin 0", html)  # only latest five published items
+        self.assertNotIn("Draft bulletin", html)
+        self.assertNotIn("Archived bulletin", html)
+
+    def test_admin_can_edit_publish_and_soft_delete_announcements_only(self):
+        staff_id = self.insert_bpso_staff()
+        conn = dbh.get_db()
+        resident_id = conn.execute(
+            "INSERT INTO users(full_name,email,password_hash,role,status) VALUES (?,?,?,'resident','active')",
+            ("Announcement Reader", "announcement-reader@example.test", generate_password_hash("ResidentPass123")),
+        ).lastrowid
+        conn.commit()
+        conn.close()
+
+        self.set_session(self.regular_id)
+        with patch.object(A.storage_service, "upload") as upload_mock:
+            created = self.client.post("/admin/announcements", data={
+                "title": "Community Meeting", "message": "Meeting at the barangay hall.",
+                "audience": "all", "is_published": "1",
+                "image": (BytesIO(b"\x89PNG\r\n\x1a\nvalid-test-image"), "meeting.png"),
+            })
+        self.assertEqual(created.status_code, 302)
+        upload_mock.assert_called_once()
+        conn = dbh.get_db()
+        announcement = conn.execute("SELECT * FROM announcements WHERE title='Community Meeting'").fetchone()
+        self.assertIsNotNone(announcement)
+        announcement_id = announcement["id"]
+        self.assertEqual((announcement["is_published"], announcement["is_archived"], announcement["audience"]), (1, 0, "all"))
+        self.assertEqual(announcement["image_filename"], "meeting.png")
+        self.assertTrue(announcement["image_stored_name"])
+        self.assertIsNotNone(conn.execute(
+            "SELECT id FROM audit_logs WHERE actor_id=? AND action='Posted announcement' AND target='Community Meeting'",
+            (self.regular_id,),
+        ).fetchone())
+        conn.close()
+
+        edit_page = self.client.get(f"/admin/announcements/{announcement_id}/edit")
+        self.assertEqual(edit_page.status_code, 200)
+        self.assertIn(b"Community Meeting", edit_page.data)
+        self.assertIn(b"Meeting at the barangay hall.", edit_page.data)
+        self.assertEqual(self.client.get(f"/announcements/{announcement_id}").status_code, 200)
+
+        self.set_session(staff_id)
+        staff_dashboard = self.client.get("/staff/dashboard")
+        self.assertEqual(staff_dashboard.status_code, 200)
+        self.assertIn("Community Meeting", staff_dashboard.get_data(as_text=True))
+        self.assertIn(f"/uploads/announcements/{announcement['image_stored_name']}", staff_dashboard.get_data(as_text=True))
+        self.assertEqual(self.client.get(f"/announcements/{announcement_id}").status_code, 200)
+        with patch.object(A.storage_service, "download", return_value=b"\x89PNG\r\n\x1a\nvalid-test-image"):
+            self.assertEqual(self.client.get(
+                f"/uploads/announcements/{announcement['image_stored_name']}"
+            ).status_code, 200)
+        for path in ("/admin/announcements", f"/admin/announcements/{announcement_id}/edit",
+                     f"/admin/announcements/{announcement_id}/publish", f"/admin/announcements/{announcement_id}/delete"):
+            self.assertEqual(self.client.post(path, data={
+                "title": "Unauthorized edit", "message": "No", "audience": "all", "is_published": "1",
+            }).status_code, 403, path)
+
+        self.set_session(resident_id)
+        self.assertIn("Community Meeting", self.client.get("/dashboard").get_data(as_text=True))
+        self.assertEqual(self.client.get(f"/announcements/{announcement_id}").status_code, 200)
+        with patch.object(A.storage_service, "download", return_value=b"\x89PNG\r\n\x1a\nvalid-test-image"):
+            self.assertEqual(self.client.get(
+                f"/uploads/announcements/{announcement['image_stored_name']}"
+            ).status_code, 200)
+
+        self.set_session(self.regular_id)
+        saved = self.client.post(f"/admin/announcements/{announcement_id}/edit", data={
+            "title": "Updated Community Meeting", "message": "Updated details for all residents and staff.",
+            "audience": "all", "is_published": "1",
+        })
+        self.assertEqual(saved.status_code, 302)
+        self.assertEqual(saved.location, "/admin/announcements")
+        self.set_session(resident_id)
+        resident_dashboard = self.client.get("/dashboard").get_data(as_text=True)
+        self.assertIn("Updated Community Meeting", resident_dashboard)
+        self.assertIn("Updated details for all residents and staff.", resident_dashboard)
+
+        self.set_session(self.regular_id)
+        self.assertEqual(self.client.post(f"/admin/announcements/{announcement_id}/publish").status_code, 302)
+        self.set_session(staff_id)
+        self.assertNotIn("Updated Community Meeting", self.client.get("/staff/dashboard").get_data(as_text=True))
+        self.assertEqual(self.client.get(f"/announcements/{announcement_id}").status_code, 404)
+
+        self.set_session(self.regular_id)
+        self.assertEqual(self.client.post(f"/admin/announcements/{announcement_id}/publish").status_code, 302)
+        self.assertEqual(self.client.post(f"/admin/announcements/{announcement_id}/delete").status_code, 302)
+        conn = dbh.get_db()
+        archived = conn.execute("SELECT is_archived,is_published,message FROM announcements WHERE id=?", (announcement_id,)).fetchone()
+        self.assertEqual((archived["is_archived"], archived["is_published"]), (1, 0))
+        self.assertEqual(archived["message"], "Updated details for all residents and staff.")
+        self.assertIsNotNone(conn.execute(
+            "SELECT id FROM audit_logs WHERE actor_id=? AND action='Archived announcement' AND target='Updated Community Meeting'",
+            (self.regular_id,),
+        ).fetchone())
+        conn.close()
+        self.set_session(resident_id)
+        self.assertNotIn("Updated Community Meeting", self.client.get("/dashboard").get_data(as_text=True))
+        self.assertEqual(self.client.get(f"/announcements/{announcement_id}").status_code, 404)
 
     def test_user_management_tabs_load_and_account_actions_preserve_records(self):
         self.set_session(self.founder_id)
@@ -639,6 +770,10 @@ class AdminHierarchyTests(unittest.TestCase):
         schema = schema.replace("    is_archived     INTEGER NOT NULL DEFAULT 0,\n", "")
         schema = schema.replace("    archived_at     TEXT,\n", "")
         schema = schema.replace("    auth_version    INTEGER NOT NULL DEFAULT 0,\n", "")
+        schema = schema.replace(
+            "CREATE INDEX IF NOT EXISTS idx_announcements_active_feed\n"
+            "    ON announcements (is_published, is_archived, audience, created_at);\n\n", "",
+        )
         conn = sqlite3.connect(legacy_path)
         conn.executescript(schema)
         conn.execute(

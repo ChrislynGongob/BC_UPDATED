@@ -240,8 +240,16 @@ CREATE TABLE IF NOT EXISTS announcements (
     title TEXT NOT NULL,
     message TEXT NOT NULL,
     posted_by_name TEXT,
+    is_published INTEGER NOT NULL DEFAULT 1,
+    audience TEXT NOT NULL DEFAULT 'all' CHECK (audience IN ('all', 'resident', 'staff')),
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    archived_at TEXT,
+    image_filename TEXT,
+    image_stored_name TEXT,
     created_at TEXT NOT NULL DEFAULT (to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS'))
 );
+CREATE INDEX IF NOT EXISTS idx_announcements_active_feed
+    ON announcements (is_published, is_archived, audience, created_at DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_founding_admin
     ON users(is_founding_admin) WHERE role='admin' AND is_founding_admin=1;

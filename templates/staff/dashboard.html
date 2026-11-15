@@ -48,6 +48,27 @@
     </a>
   </div>
 
+  <section class="staff-announcements card" aria-labelledby="staff-announcements-heading">
+    <div class="card-head staff-announcements-heading">
+      <div><h3 id="staff-announcements-heading">Barangay Announcements</h3><p class="dashboard-card-subtitle">Latest notices for your office</p></div>
+    </div>
+    {% if announcements %}
+    <div class="staff-announcement-list">
+      {% for announcement in announcements %}
+      <article class="staff-announcement-item">
+        {% if announcement.image_stored_name %}<a class="staff-announcement-image-link" href="{{ url_for('view_announcement', announcement_id=announcement.id) }}" aria-label="View {{ announcement.title }}"><img src="{{ url_for('serve_upload', subdir='announcements', stored_name=announcement.image_stored_name) }}" alt=""></a>{% endif %}
+        <div class="staff-announcement-copy">
+          <h4>{{ announcement.title }}</h4>
+          <p>{{ announcement.message[:240] }}{{ '…' if announcement.message|length > 240 }}</p>
+          <div class="staff-announcement-meta"><span>Posted {{ announcement.created_at }}</span><span>By {{ announcement.posted_by_name or 'Barangay Administration' }}</span></div>
+        </div>
+        <a class="btn btn-outline btn-sm staff-announcement-view" href="{{ url_for('view_announcement', announcement_id=announcement.id) }}">View Details</a>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}<div class="empty-state">No announcements available at the moment.</div>{% endif %}
+  </section>
+
   {% if can_complaints and related_clusters %}
   <section class="card dashboard-clusters">
     <div class="card-head">

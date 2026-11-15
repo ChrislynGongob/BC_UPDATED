@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% set values = form_values or {} %}
+{% block title %}{{ 'Edit' if announcement else 'Create' }} Announcement &mdash; BarangayConnect{% endblock %}
+{% block page_title %}{{ 'Edit' if announcement else 'Create' }} Announcement{% endblock %}
+{% block content %}
+<section class="announcement-editor card">
+  <a class="announcement-back-link" href="{{ url_for('admin_announcements') }}" aria-label="Back to announcements">&larr; Announcements</a>
+  <p class="muted">Update the announcement content and publication settings.</p>
+  <form method="POST" enctype="multipart/form-data" class="form-grid" data-confirm-message="Save these announcement changes?" data-confirm-label="Save changes">
+    <div class="form-row"><label for="announcement-title">Title</label><input id="announcement-title" name="title" type="text" maxlength="160" required value="{{ values.get('title', announcement.title if announcement else '') }}"></div>
+    <div class="form-row"><label for="announcement-message">Description or message</label><textarea id="announcement-message" name="message" maxlength="20000" rows="7" required>{{ values.get('message', announcement.message if announcement else '') }}</textarea></div>
+    <div class="announcement-form-options">
+      <div class="form-row"><label for="announcement-audience">Audience</label><select id="announcement-audience" name="audience"><option value="all" {{ 'selected' if values.get('audience', announcement.audience if announcement else 'all') == 'all' }}>Residents and Staff</option><option value="resident" {{ 'selected' if values.get('audience', announcement.audience if announcement else 'all') == 'resident' }}>Residents only</option><option value="staff" {{ 'selected' if values.get('audience', announcement.audience if announcement else 'all') == 'staff' }}>Staff only</option></select></div>
+      <div class="form-row"><label for="announcement-publication">Publication</label><select id="announcement-publication" name="is_published"><option value="1" {{ 'selected' if values.get('is_published', announcement.is_published|string if announcement else '1') == '1' }}>Published</option><option value="0" {{ 'selected' if values.get('is_published', announcement.is_published|string if announcement else '1') == '0' }}>Draft</option></select></div>
+    </div>
+    {% if announcement and announcement.image_stored_name %}
+    <div class="announcement-current-image"><span class="form-label">Current image</span><img src="{{ url_for('serve_upload', subdir='announcements', stored_name=announcement.image_stored_name) }}" alt="Current announcement attachment"><label><input type="checkbox" name="remove_image" value="1"> Remove the current image</label></div>
+    {% endif %}
+    <div class="form-row"><label for="announcement-image">{{ 'Replace or add image' if announcement else 'Attached image (optional)' }}</label><input id="announcement-image" type="file" name="image" accept=".jpg,.jpeg,.png,.webp"><span class="hint">JPG, PNG, or WEBP up to 5 MB.</span></div>
+    <div class="actions-row"><button class="btn btn-primary" type="submit">Save Changes</button><a class="btn btn-outline" href="{{ url_for('admin_announcements') }}">Cancel</a></div>
+  </form>
+</section>
+{% endblock %}

@@ -15,7 +15,8 @@
   <div style="margin-bottom:{{ '12px' if not loop.last else '0' }};">
     <strong>{{ a.title }}</strong>
     <p class="muted" style="margin:2px 0 0;">{{ a.message }}</p>
-    <span class="muted" style="font-size:11.5px;">{{ a.created_at }}</span>
+    <div class="resident-announcement-meta"><span class="muted" style="font-size:11.5px;">{{ a.created_at }}{% if a.posted_by_name %} &middot; {{ a.posted_by_name }}{% endif %}</span><a href="{{ url_for('view_announcement', announcement_id=a.id) }}">View Details</a></div>
+    {% if a.image_stored_name %}<img class="resident-announcement-image" src="{{ url_for('serve_upload', subdir='announcements', stored_name=a.image_stored_name) }}" alt="Image attached to {{ a.title }}">{% endif %}
   </div>
   {% endfor %}
 </div>

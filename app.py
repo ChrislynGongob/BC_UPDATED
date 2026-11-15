@@ -1567,7 +1567,8 @@ def resident_dashboard(user):
         "SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 5", (user["id"],)
     ).fetchall()
     announcements = conn.execute(
-        "SELECT * FROM announcements ORDER BY created_at DESC LIMIT 3"
+        "SELECT * FROM announcements WHERE is_published=1 AND is_archived=0 "
+        "AND audience IN ('all','resident') ORDER BY created_at DESC, id DESC LIMIT 3"
     ).fetchall()
     conn.close()
     return render_template(
@@ -2531,6 +2532,10 @@ def staff_dashboard(user):
             "ORDER BY CASE priority WHEN 'High' THEN 0 ELSE 1 END, created_at ASC LIMIT 8"
         ).fetchall()
         related_clusters = related_complaint_clusters(conn, user["id"])
+    announcements = conn.execute(
+        "SELECT * FROM announcements WHERE is_published=1 AND is_archived=0 "
+        "AND audience IN ('all','staff') ORDER BY created_at DESC, id DESC LIMIT 5"
+    ).fetchall()
     conn.close()
     office_cfg = OFFICES.get(user["office"])
     return render_template(
@@ -2538,6 +2543,7 @@ def staff_dashboard(user):
         urgent_complaints=urgent_complaints, complaint_stats=complaint_stats, total_complaints=total_complaints,
         queue=queue, my_complaint_queue=my_complaint_queue,
         can_requests=can_requests, can_complaints=can_complaints,
+        announcements=announcements,
         office_label=office_cfg["label"] if office_cfg else None,
         handled_types=types, related_clusters=related_clusters,
     )
@@ -3909,28 +3915,150 @@ def admin_announcements(user):
     if request.method == "POST":
         title = request.form.get("title", "").strip()
         message = request.form.get("message", "").strip()
-        if not title or not message:
+        audience = request.form.get("audience", "all").strip().lower()
+        is_published = request.form.get("is_published", "1").strip()
+        if not title or len(title) > 160 or not message or len(message) > 20000:
             conn.close()
-            flash("Please provide both a title and a message.", "error")
-            return redirect(url_for("admin_announcements"))
-
+            flash("Enter a title (up to 160 characters) and message (up to 20,000 characters).", "error")
+            return render_template("admin/announcement_form.html", announcement=None, form_values=request.form), 400
+        if audience not in {"all", "resident", "staff"} or is_published not in {"0", "1"}:
+            conn.close()
+            flash("Choose a valid audience and publication status.", "error")
+            return render_template("admin/announcement_form.html", announcement=None, form_values=request.form), 400
+        try:
+            image = save_upload(request.files.get("image"), "announcements",
+                                allowed_ext={"jpg", "jpeg", "png", "webp"},
+                                max_size=MAX_FILE_SIZE, strict_type=True)
+        except ValueError as error:
+            conn.close()
+            flash(str(error), "error")
+            return render_template("admin/announcement_form.html", announcement=None, form_values=request.form), 400
+        filename, stored_name = image if image else (None, None)
         cur = conn.execute(
-            "INSERT INTO announcements (title, message, posted_by_name) VALUES (?,?,?)",
-            (title, message, user["full_name"]),
+            "INSERT INTO announcements (title, message, posted_by_name, is_published, audience, image_filename, image_stored_name) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (title, message, user["full_name"], int(is_published), audience, filename, stored_name),
         )
-        ann_id = cur.lastrowid
-        residents = conn.execute("SELECT id FROM users WHERE role='resident' AND status='active'").fetchall()
-        for r in residents:
-            dbh.notify(conn, r["id"], f"Barangay Announcement: {title}", url_for("resident_dashboard"))
-        dbh.log_action(conn, user, "Posted announcement", target=title, details=f"Sent to {len(residents)} residents")
+        residents = []
+        if int(is_published) and audience in {"all", "resident"}:
+            residents = conn.execute(
+                "SELECT id FROM users WHERE role='resident' AND status='active' AND is_archived=0"
+            ).fetchall()
+            for resident in residents:
+                dbh.notify(conn, resident["id"], f"Barangay Announcement: {title}", url_for("resident_dashboard"))
+        dbh.log_action(conn, user, "Posted announcement", target=title,
+                       details=f"announcement_id={cur.lastrowid}; audience={audience}; published={is_published}; notified_residents={len(residents)}")
         conn.commit()
         conn.close()
-        flash(f"Announcement posted to {len(residents)} residents.", "success")
+        flash("Announcement published." if int(is_published) else "Announcement saved as draft.", "success")
         return redirect(url_for("admin_announcements"))
 
-    rows = conn.execute("SELECT * FROM announcements ORDER BY created_at DESC LIMIT 50").fetchall()
+    rows = conn.execute("SELECT * FROM announcements ORDER BY created_at DESC, id DESC LIMIT 50").fetchall()
     conn.close()
     return render_template("admin/announcements.html", rows=rows)
+
+
+@app.route("/admin/announcements/<int:announcement_id>/edit", methods=["GET", "POST"])
+@login_required("admin")
+def edit_announcement(user, announcement_id):
+    conn = dbh.get_db()
+    announcement = conn.execute(
+        "SELECT * FROM announcements WHERE id=? AND is_archived=0", (announcement_id,)
+    ).fetchone()
+    if not announcement:
+        conn.close()
+        abort(404)
+    if request.method == "GET":
+        conn.close()
+        return render_template("admin/announcement_form.html", announcement=announcement, form_values={})
+
+    title = request.form.get("title", "").strip()
+    message = request.form.get("message", "").strip()
+    audience = request.form.get("audience", "all").strip().lower()
+    is_published = request.form.get("is_published", "1").strip()
+    if not title or len(title) > 160 or not message or len(message) > 20000:
+        conn.close()
+        flash("Enter a title (up to 160 characters) and message (up to 20,000 characters).", "error")
+        return render_template("admin/announcement_form.html", announcement=announcement, form_values=request.form), 400
+    if audience not in {"all", "resident", "staff"} or is_published not in {"0", "1"}:
+        conn.close()
+        flash("Choose a valid audience and publication status.", "error")
+        return render_template("admin/announcement_form.html", announcement=announcement, form_values=request.form), 400
+    try:
+        image = save_upload(request.files.get("image"), "announcements",
+                            allowed_ext={"jpg", "jpeg", "png", "webp"},
+                            max_size=MAX_FILE_SIZE, strict_type=True)
+    except ValueError as error:
+        conn.close()
+        flash(str(error), "error")
+        return render_template("admin/announcement_form.html", announcement=announcement, form_values=request.form), 400
+    filename, stored_name = image if image else (announcement["image_filename"], announcement["image_stored_name"])
+    if request.form.get("remove_image") == "1" and not image:
+        filename = stored_name = None
+    conn.execute(
+        "UPDATE announcements SET title=?,message=?,is_published=?,audience=?,image_filename=?,image_stored_name=? WHERE id=?",
+        (title, message, int(is_published), audience, filename, stored_name, announcement_id),
+    )
+    dbh.log_action(conn, user, "Updated announcement", target=title,
+                   details=f"announcement_id={announcement_id}; audience={audience}; published={is_published}")
+    conn.commit()
+    conn.close()
+    flash("Announcement updated.", "success")
+    return redirect(url_for("admin_announcements"))
+
+
+@app.route("/admin/announcements/<int:announcement_id>/publish", methods=["POST"])
+@login_required("admin")
+def toggle_announcement_publication(user, announcement_id):
+    conn = dbh.get_db()
+    row = conn.execute(
+        "SELECT * FROM announcements WHERE id=? AND is_archived=0", (announcement_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        abort(404)
+    published = 0 if row["is_published"] else 1
+    conn.execute("UPDATE announcements SET is_published=? WHERE id=?", (published, announcement_id))
+    dbh.log_action(conn, user, "Published announcement" if published else "Unpublished announcement",
+                   target=row["title"], details=f"announcement_id={announcement_id}")
+    conn.commit()
+    conn.close()
+    flash("Announcement published." if published else "Announcement unpublished.", "success")
+    return redirect(url_for("admin_announcements"))
+
+
+@app.route("/admin/announcements/<int:announcement_id>/delete", methods=["POST"])
+@login_required("admin")
+def archive_announcement(user, announcement_id):
+    conn = dbh.get_db()
+    row = conn.execute(
+        "SELECT * FROM announcements WHERE id=? AND is_archived=0", (announcement_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        abort(404)
+    conn.execute("UPDATE announcements SET is_archived=1,archived_at=datetime('now'),is_published=0 WHERE id=?",
+                 (announcement_id,))
+    dbh.log_action(conn, user, "Archived announcement", target=row["title"],
+                   details=f"announcement_id={announcement_id}; soft_delete=1")
+    conn.commit()
+    conn.close()
+    flash("Announcement archived and removed from public dashboards.", "success")
+    return redirect(url_for("admin_announcements"))
+
+
+@app.route("/announcements/<int:announcement_id>")
+@login_required("resident", "staff", "admin")
+def view_announcement(user, announcement_id):
+    conn = dbh.get_db()
+    announcement = conn.execute("SELECT * FROM announcements WHERE id=?", (announcement_id,)).fetchone()
+    conn.close()
+    if not announcement:
+        abort(404)
+    if user["role"] != "admin":
+        if not announcement["is_published"] or announcement["is_archived"] or announcement["audience"] not in {"all", user["role"]}:
+            abort(404)
+    return render_template("announcements/detail.html", announcement=announcement)
 
 
 REPORT_RANGES = {
@@ -4927,7 +5055,7 @@ def search(user):
 @app.route("/uploads/<subdir>/<stored_name>")
 @login_required("resident", "staff", "admin")
 def serve_upload(user, subdir, stored_name):
-    if subdir not in {"requests", "complaints", "profiles"}:
+    if subdir not in {"requests", "complaints", "profiles", "announcements"}:
         abort(404)
 
     safe_name = os.path.basename(stored_name)
@@ -4948,13 +5076,22 @@ def serve_upload(user, subdir, stored_name):
         ).fetchone()
     elif subdir == "profiles":
         record = conn.execute("SELECT id, profile_picture AS stored_name, id AS resident_id FROM users WHERE profile_picture=?", (safe_name,)).fetchone()
+    elif subdir == "announcements":
+        record = conn.execute(
+            "SELECT id,is_published,is_archived,audience,image_stored_name AS stored_name,"
+            "image_filename AS filename FROM announcements WHERE image_stored_name=?",
+            (safe_name,),
+        ).fetchone()
     conn.close()
 
     if not record:
         abort(403)
 
     if user["role"] == "resident":
-        if record["resident_id"] != user["id"]:
+        if subdir == "announcements":
+            if not record["is_published"] or record["is_archived"] or record["audience"] not in {"all", "resident"}:
+                abort(404)
+        elif record["resident_id"] != user["id"]:
             abort(403)
     elif user["role"] == "staff":
         if subdir == "requests":
@@ -4966,6 +5103,9 @@ def serve_upload(user, subdir, stored_name):
         elif subdir == "profiles":
             if record["resident_id"] != user["id"]:
                 abort(403)
+        elif subdir == "announcements":
+            if not record["is_published"] or record["is_archived"] or record["audience"] not in {"all", "staff"}:
+                abort(404)
     elif user["role"] == "admin":
         pass
 
@@ -4979,7 +5119,7 @@ def serve_upload(user, subdir, stored_name):
         app.logger.error("File storage request failed: %s", error)
         abort(502)
 
-    filename = record["filename"] if subdir in {"requests", "complaints"} else safe_name
+    filename = record["filename"] if subdir in {"requests", "complaints", "announcements"} else safe_name
     mimetype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     if record and subdir in {"requests", "complaints"}:
         return send_file(

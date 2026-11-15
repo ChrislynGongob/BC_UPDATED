@@ -253,8 +253,16 @@ CREATE TABLE IF NOT EXISTS announcements (
     title           TEXT NOT NULL,
     message         TEXT NOT NULL,
     posted_by_name  TEXT,
+    is_published    INTEGER NOT NULL DEFAULT 1,
+    audience        TEXT NOT NULL DEFAULT 'all' CHECK (audience IN ('all', 'resident', 'staff')),
+    is_archived     INTEGER NOT NULL DEFAULT 0,
+    archived_at     TEXT,
+    image_filename  TEXT,
+    image_stored_name TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX IF NOT EXISTS idx_announcements_active_feed
+    ON announcements (is_published, is_archived, audience, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_requests_resident ON requests(resident_id);
 CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status);

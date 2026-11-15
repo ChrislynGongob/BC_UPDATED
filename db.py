@@ -519,6 +519,27 @@ def migrate_db():
         conn.execute("ALTER TABLE community_issue_updates ADD COLUMN changed_by TEXT")
     if "message" not in update_cols:
         conn.execute("ALTER TABLE community_issue_updates ADD COLUMN message TEXT")
+    announcement_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='announcements'"
+    ).fetchone()
+    if announcement_table:
+        announcement_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(announcements)").fetchall()
+        }
+        for column, definition in (
+            ("is_published", "INTEGER NOT NULL DEFAULT 1"),
+            ("audience", "TEXT NOT NULL DEFAULT 'all'"),
+            ("is_archived", "INTEGER NOT NULL DEFAULT 0"),
+            ("archived_at", "TEXT"),
+            ("image_filename", "TEXT"),
+            ("image_stored_name", "TEXT"),
+        ):
+            if column not in announcement_cols:
+                conn.execute(f"ALTER TABLE announcements ADD COLUMN {column} {definition}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_announcements_active_feed "
+            "ON announcements (is_published, is_archived, audience, created_at)"
+        )
     user_cols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
     if "is_super_admin" not in user_cols:
         conn.execute(

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ announcement.title }} &mdash; BarangayConnect{% endblock %}
+{% block page_title %}Announcement Details{% endblock %}
+{% block content %}
+<article class="announcement-detail card">
+  <a class="announcement-back-link" href="{{ url_for('admin_announcements') if current_user.role == 'admin' else (url_for('staff_dashboard') if current_user.role == 'staff' else url_for('resident_dashboard')) }}" aria-label="Back to announcements">&larr; Back</a>
+  {% if current_user.role == 'admin' %}<span class="badge {{ 'badge-Approved' if announcement.is_published and not announcement.is_archived else 'badge-Rejected' }}">{{ 'Archived' if announcement.is_archived else ('Published' if announcement.is_published else 'Draft') }}</span>{% endif %}
+  <h2>{{ announcement.title }}</h2>
+  <div class="announcement-detail-meta"><span>Posted {{ announcement.created_at }}</span><span>By {{ announcement.posted_by_name or 'Barangay Administration' }}</span></div>
+  {% if announcement.image_stored_name %}<img class="announcement-detail-image" src="{{ url_for('serve_upload', subdir='announcements', stored_name=announcement.image_stored_name) }}" alt="Image attached to {{ announcement.title }}">{% endif %}
+  <div class="announcement-detail-message">{{ announcement.message }}</div>
+  {% if current_user.role == 'admin' and not announcement.is_archived %}<div class="actions-row"><a class="btn btn-primary" href="{{ url_for('edit_announcement', announcement_id=announcement.id) }}">Edit Announcement</a></div>{% endif %}
+</article>
+{% endblock %}
