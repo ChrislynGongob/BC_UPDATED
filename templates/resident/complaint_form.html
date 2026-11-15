@@ -15,7 +15,7 @@
   <div class="flash flash-info" style="margin-bottom:16px;">
     You have {{ daily_remaining }} of {{ daily_limit }} concern submissions available.
   </div>
-  <form id="complaint-form" method="POST" enctype="multipart/form-data" class="form-grid">
+  <form id="complaint-form" method="POST" enctype="multipart/form-data" class="form-grid" data-confirm-message="Submit this complaint or concern? Please review the details before continuing." data-confirm-label="Submit concern">
     <div class="form-row">
       <label>Category</label>
       <select name="category" required>

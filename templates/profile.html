@@ -57,6 +57,19 @@
   {% endif %}
 </div>
 
+{% if current_user.role == 'staff' %}
+<div class="card profile-settings-card" id="personal-information">
+  <h3>Edit Personal Information</h3>
+  <p class="muted">Update your own name and mobile number. Role and office assignments remain administrator-managed.</p>
+  <form method="POST" class="form-grid">
+    <input type="hidden" name="action" value="personal_info">
+    <div class="form-row"><label for="staff-profile-name">Full name</label><input id="staff-profile-name" type="text" name="full_name" maxlength="120" required value="{{ current_user.full_name }}"></div>
+    <div class="form-row"><label for="staff-profile-mobile">Philippine mobile number</label><input id="staff-profile-mobile" type="tel" name="contact_number" value="{{ current_user.contact_number or '' }}" placeholder="0917 123 4567"><span class="hint">Leave blank if you do not want a mobile number listed.</span></div>
+    <button class="btn btn-primary" type="submit">Save Personal Information</button>
+  </form>
+</div>
+{% endif %}
+
 {% if current_user.role == 'resident' %}
 <div class="card profile-settings-card">
   <h3>Address / Location</h3>
@@ -76,7 +89,7 @@
 </div>
 {% endif %}
 
-<div class="card profile-settings-card">
+<div class="card profile-settings-card" id="change-password">
   <h3>Change Password</h3>
   <form method="POST" action="{{ url_for('change_password') }}" class="form-grid">
     <div class="form-row">

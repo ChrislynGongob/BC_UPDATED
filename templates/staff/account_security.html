@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Account Security — BarangayConnect{% endblock %}
+{% block page_title %}Account Security{% endblock %}
+{% block content %}
+<div class="card" style="max-width:760px">
+  <h2>Account Security</h2>
+  <p class="muted">Review your sign-in identity and staff access assignment. Role and office permissions are managed by an administrator.</p>
+  <dl class="detail-grid">
+    <div class="detail-item"><div class="k">Account</div><div class="v">{{ account.full_name }}</div></div>
+    <div class="detail-item"><div class="k">Sign-in email</div><div class="v">{{ account.email }}</div></div>
+    <div class="detail-item"><div class="k">Account role</div><div class="v">Staff</div></div>
+    <div class="detail-item"><div class="k">Assigned office</div><div class="v">{{ office_label }}</div></div>
+    <div class="detail-item"><div class="k">Account status</div><div class="v">{{ account.status|title }}</div></div>
+  </dl>
+  <div class="card" style="margin:16px 0 0;background:#f8fbfd">
+    <h3>Password</h3>
+    <p class="muted">Change your password from your profile. Your current password is required to save a new one.</p>
+    <a class="btn btn-primary" href="{{ url_for('profile') }}#change-password">Change Password</a>
+  </div>
+</div>
+{% endblock %}

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}BarangayConnect{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=2) }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=4) }}">
 </head>
 <body data-role="{{ current_user.role if current_user else '' }}" class="{% if current_user %}has-shell{% else %}auth-body{% endif %}{% if current_user and current_user.role == 'resident' and request.endpoint == 'resident_dashboard' %} resident-dashboard-page{% endif %}">
 
@@ -117,10 +117,12 @@
       {% endif %}
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
-          <div class="flash-stack">
+          <div class="flash-stack toast-region" aria-label="Notifications" aria-live="polite">
           {% for category, message in messages %}
             {% if category not in ['concern_success', 'duplicate_request_block', 'duplicate_concern_block'] %}
-            <div class="flash flash-{{ category }}">{{ message }}</div>
+            <div class="flash flash-{{ category }} toast-message" role="{{ 'alert' if category in ['error','warning'] else 'status' }}">
+              <span>{{ message }}</span><button type="button" class="toast-dismiss" aria-label="Dismiss notification">×</button>
+            </div>
             {% endif %}
           {% endfor %}
           </div>
@@ -181,6 +183,20 @@
   </div>
 </div>
 
+{% if current_user %}
+<dialog class="app-confirm-dialog" id="app-confirm-dialog" aria-labelledby="app-confirm-title" aria-describedby="app-confirm-message">
+  <form method="dialog" class="app-confirm-card">
+    <span class="app-confirm-icon" aria-hidden="true">?</span>
+    <h2 id="app-confirm-title">Please confirm</h2>
+    <p id="app-confirm-message">Continue with this action?</p>
+    <div class="app-confirm-actions">
+      <button type="button" class="btn btn-outline" data-confirm-cancel>Cancel</button>
+      <button type="button" class="btn btn-primary" data-confirm-accept>Continue</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+
 {% if current_user.role == 'resident' %}
 <div id="bc-widget"
      data-message-url="{{ url_for('api_assistant_message') }}"
@@ -211,7 +227,9 @@
     {% if messages %}
       <div class="flash-stack auth-flash">
       {% for category, message in messages %}
-        <div class="flash flash-{{ category }}">{{ message }}</div>
+        <div class="flash flash-{{ category }} toast-message" role="{{ 'alert' if category in ['error','warning'] else 'status' }}">
+          <span>{{ message }}</span><button type="button" class="toast-dismiss" aria-label="Dismiss notification">×</button>
+        </div>
       {% endfor %}
       </div>
     {% endif %}
@@ -247,7 +265,64 @@
 </script>
 {% endif %}
 {% if current_user %}
+<script>
+(() => {
+  const dialog = document.getElementById('app-confirm-dialog');
+  let pendingForm = null;
+  document.addEventListener('submit', (event) => {
+    const form = event.target.closest('form[data-confirm-message]');
+    if (!form || form.dataset.confirmed === 'true' || !dialog) return;
+    event.preventDefault();
+    pendingForm = form;
+    document.getElementById('app-confirm-message').textContent = form.dataset.confirmMessage || 'Continue with this action?';
+    const accept = dialog.querySelector('[data-confirm-accept]');
+    accept.textContent = form.dataset.confirmLabel || 'Continue';
+    dialog.showModal();
+  });
+  document.addEventListener('click', (event) => {
+    const trigger = event.target.closest('.resident-more-actions-trigger');
+    if (!trigger) return;
+    const menu = document.getElementById(trigger.getAttribute('popovertarget'));
+    requestAnimationFrame(() => {
+      if (!menu || !menu.matches(':popover-open')) return;
+      const rect = trigger.getBoundingClientRect();
+      const left = Math.max(8, Math.min(rect.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8));
+      let top = rect.bottom + 6;
+      if (top + menu.offsetHeight > window.innerHeight - 8) top = rect.top - menu.offsetHeight - 6;
+      menu.style.left = `${left}px`;
+      menu.style.top = `${Math.max(8, top)}px`;
+    });
+  });
+  window.addEventListener('scroll', () => {
+    document.querySelectorAll('.resident-more-actions-menu:popover-open').forEach((menu) => menu.hidePopover());
+  }, true);
+  dialog?.querySelector('[data-confirm-cancel]')?.addEventListener('click', () => {
+    pendingForm = null; dialog.close();
+  });
+  dialog?.querySelector('[data-confirm-accept]')?.addEventListener('click', () => {
+    if (!pendingForm) return;
+    const form = pendingForm; pendingForm = null; dialog.close();
+    form.dataset.confirmed = 'true'; form.requestSubmit();
+  });
+  dialog?.addEventListener('click', (event) => {
+    if (event.target === dialog) { pendingForm = null; dialog.close(); }
+  });
+  document.querySelectorAll('.toast-message').forEach((toast) => {
+    const dismiss = () => { toast.classList.add('toast-leaving'); window.setTimeout(() => toast.remove(), 220); };
+    toast.querySelector('.toast-dismiss')?.addEventListener('click', dismiss);
+    window.setTimeout(dismiss, toast.getAttribute('role') === 'alert' ? 10000 : 7000);
+  });
+})();
+</script>
 <script src="{{ url_for('static', filename='js/partial-navigation.js') }}" defer></script>
+{% else %}
+<script>
+document.querySelectorAll('.toast-message').forEach((toast) => {
+  const dismiss = () => { toast.classList.add('toast-leaving'); window.setTimeout(() => toast.remove(), 220); };
+  toast.querySelector('.toast-dismiss')?.addEventListener('click', dismiss);
+  window.setTimeout(dismiss, toast.getAttribute('role') === 'alert' ? 10000 : 7000);
+});
+</script>
 {% endif %}
 <script src="{{ url_for('static', filename='js/password-visibility.js', v=2) }}" defer></script>
 </body>

@@ -5,7 +5,7 @@
 <section class="um-page" aria-labelledby="um-title">
   <header class="um-header">
     <a class="um-back" href="{{ url_for('admin_dashboard') }}" id="um-back" aria-label="Go Back" title="Go Back">
-      <span aria-hidden="true">←</span><span class="sr-only">Go Back</span>
+      <span aria-hidden="true">&#8592;</span><span class="sr-only">Go Back</span>
     </a>
     <div class="um-heading-icon" aria-hidden="true">♙</div>
     <div class="um-heading-copy">
@@ -72,10 +72,10 @@
           <td><span class="um-status-pill {{ 'archived' if u.is_archived|int else u.status }}">{{ 'Archived' if u.is_archived|int else u.status|title }}</span></td><td class="um-date" title="{{ u.created_at }}">{{ u.created_at or '—' }}</td>
           <td><div class="um-row-actions"><a class="um-icon-action" href="{{ url_for('view_staff_account', staff_id=u.id) }}" aria-label="View {{ u.full_name }}" title="View">◉</a><a class="um-icon-action" href="{{ url_for('edit_staff_account', staff_id=u.id) }}" aria-label="Edit {{ u.full_name }}" title="Edit">✎</a><details class="um-more"><summary class="um-icon-action" aria-label="More actions for {{ u.full_name }}" title="More actions">⋯</summary><div class="um-more-menu">
             {% if u.is_archived|int %}<form method="POST" action="{{ url_for('user_role_administration') }}"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button type="submit">Restore account</button></form>
-            {% else %}<form method="POST" action="{{ url_for('toggle_staff', staff_id=u.id) }}" onsubmit="return confirm('Change this staff account status?')"><button type="submit">{{ 'Deactivate' if u.status == 'active' else 'Activate' }}</button></form><form method="POST" action="{{ url_for('reset_staff_password', staff_id=u.id) }}" onsubmit="return confirm('Reset this staff member’s sign-in credentials?')"><button type="submit">Reset password</button></form><form method="POST" action="{{ url_for('user_role_administration') }}" onsubmit="return confirm('Archive this staff account and retain its history?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button type="submit">Archive account</button></form>
+            {% else %}<form method="POST" action="{{ url_for('toggle_staff', staff_id=u.id) }}" data-confirm-message="Change this staff account status?" data-confirm-label="Confirm change"><button type="submit">{{ 'Deactivate' if u.status == 'active' else 'Activate' }}</button></form><form method="POST" action="{{ url_for('reset_staff_password', staff_id=u.id) }}" data-confirm-message="Reset this staff member’s sign-in credentials?" data-confirm-label="Reset password"><button type="submit">Reset password</button></form><form method="POST" action="{{ url_for('user_role_administration') }}" data-confirm-message="Archive this staff account and retain its history?" data-confirm-label="Archive"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button type="submit">Archive account</button></form>
               {% if founder %}<form method="POST" action="{{ url_for('user_role_administration') }}" class="um-role-change" data-confirm-message="Apply this staff account role or office change?"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="role"><label class="sr-only" for="staff-role-{{ u.id }}">Role for {{ u.full_name }}</label><select id="staff-role-{{ u.id }}" name="role"><option value="resident">Resident</option><option value="staff" selected>Staff</option></select><label class="sr-only" for="staff-role-office-{{ u.id }}">Staff office</label><select id="staff-role-office-{{ u.id }}" name="office">{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office == key }}>{{ cfg.label }}</option>{% endfor %}</select><button type="submit">Change role / office</button></form>{% endif %}
             {% endif %}
-            <form method="POST" action="{{ url_for('user_role_administration') }}" onsubmit="return confirm('Permanently delete this staff account? This cannot be undone. Accounts with linked service records will be blocked.')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="delete"><button class="um-danger-action" type="submit">Delete permanently</button></form>
+            <form method="POST" action="{{ url_for('user_role_administration') }}" data-confirm-message="Permanently delete this staff account? This cannot be undone. Accounts with linked service records will be blocked." data-confirm-label="Delete permanently"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="delete"><button class="um-danger-action" type="submit">Delete permanently</button></form>
           </div></details></div></td>
         </tr>{% endfor %}</tbody>
       </table></div>{% else %}<div class="um-empty">No staff accounts match the selected filters.</div>{% endif %}
@@ -148,13 +148,13 @@
                 <summary class="um-icon-action" aria-label="More actions for {{ u.full_name }}" title="More actions"><span aria-hidden="true">⋯</span></summary>
                 <div class="um-more-menu">
                   {% if u.is_archived|int %}
-                    <form method="POST" onsubmit="return confirm('Restore this account?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button type="submit">Restore account</button></form>
+                    <form method="POST" data-confirm-message="Restore this account?" data-confirm-label="Restore"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button type="submit">Restore account</button></form>
                   {% else %}
-                    <form method="POST" onsubmit="return confirm('{{ 'Deactivate' if u.status == 'active' else 'Activate' }} this account?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="status"><button type="submit">{{ 'Deactivate' if u.status == 'active' else 'Activate' }}</button></form>
-                    <form method="POST" onsubmit="return confirm('Archive this account and retain its history?')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button type="submit">Archive account</button></form>
+                    <form method="POST" data-confirm-message="{{ 'Deactivate' if u.status == 'active' else 'Activate' }} this account?" data-confirm-label="Confirm change"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="status"><button type="submit">{{ 'Deactivate' if u.status == 'active' else 'Activate' }}</button></form>
+                    <form method="POST" data-confirm-message="Archive this account and retain its history?" data-confirm-label="Archive"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button type="submit">Archive account</button></form>
                     {% if founder and u.role == 'staff' %}<form method="POST" class="um-role-change" data-confirm-message="Apply this staff account role or office change?"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="role"><label class="sr-only" for="role-{{ u.id }}">Change staff role for {{ u.full_name }}</label><select id="role-{{ u.id }}" name="role"><option value="resident">Resident</option><option value="staff" selected>Staff</option></select><label class="sr-only" for="office-{{ u.id }}">Staff office</label><select id="office-{{ u.id }}" name="office"><option value="">Choose staff office</option>{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office==key }}>{{ cfg.label }}</option>{% endfor %}</select><button type="submit">Change role / office</button></form>{% endif %}
                   {% endif %}
-                  {% if u.role != 'resident' %}<form method="POST" onsubmit="return confirm('Permanently delete this account? This cannot be undone. Accounts with linked service records will be blocked.')"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="delete"><button class="um-danger-action" type="submit">Delete permanently</button></form>{% endif %}
+                  {% if u.role != 'resident' %}<form method="POST" data-confirm-message="Permanently delete this account? This cannot be undone. Accounts with linked service records will be blocked." data-confirm-label="Delete permanently"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="delete"><button class="um-danger-action" type="submit">Delete permanently</button></form>{% endif %}
                 </div>
               </details>
               {% endif %}
@@ -183,16 +183,6 @@
       {% if page < page_count %}<a href="{{ url_for('user_role_administration', role=selected_role or None, status=selected_status, q=q or None, page=page+1) }}" aria-label="Next page">Next ›</a>{% else %}<span class="disabled">Next ›</span>{% endif %}
     </nav>{% endif %}
   </footer>
-{% if founder and selected_role != 'resident' and selected_status != 'archived' and (rows|selectattr('role', 'equalto', 'staff')|list) %}
-<dialog class="um-role-confirm" id="um-role-confirm" aria-labelledby="um-role-confirm-title" aria-describedby="um-role-confirm-text">
-  <form method="dialog" class="um-role-confirm-card">
-    <span class="um-confirm-icon" aria-hidden="true">!</span>
-    <h2 id="um-role-confirm-title">Confirm staff role change</h2>
-    <p id="um-role-confirm-text">Apply the selected role or office assignment to this staff account?</p>
-    <div class="um-confirm-actions"><button type="button" data-role-cancel class="btn btn-outline">Cancel</button><button type="button" data-role-confirm class="btn btn-primary">Confirm change</button></div>
-  </form>
-</dialog>
-{% endif %}
 </section>
 <script>
 (() => {
@@ -213,20 +203,6 @@
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') document.querySelectorAll('.um-more[open]').forEach((menu) => menu.open = false);
   });
-  const roleDialog = document.getElementById('um-role-confirm');
-  let pendingRoleForm = null;
-  if (roleDialog) {
-    document.querySelectorAll('form.um-role-change').forEach((form) => form.addEventListener('submit', (event) => {
-      if (form.dataset.confirmed === 'true') return;
-      event.preventDefault(); pendingRoleForm = form; roleDialog.showModal();
-    }));
-    roleDialog.querySelector('[data-role-cancel]')?.addEventListener('click', () => { pendingRoleForm = null; roleDialog.close(); });
-    roleDialog.querySelector('[data-role-confirm]')?.addEventListener('click', () => {
-      if (!pendingRoleForm) return;
-      const form = pendingRoleForm; pendingRoleForm = null; roleDialog.close();
-      form.dataset.confirmed = 'true'; form.requestSubmit();
-    });
-  }
 })();
 </script>
 {% endblock %}

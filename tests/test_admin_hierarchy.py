@@ -216,6 +216,132 @@ class AdminHierarchyTests(unittest.TestCase):
         self.set_session(staff_id)
         self.assertEqual(self.client.get("/admin/settings/barangay-information").status_code, 403)
 
+    def test_staff_has_no_settings_gear_and_profile_password_security_permissions(self):
+        staff_id = self.insert_bpso_staff()
+        self.set_session(staff_id)
+
+        dashboard = self.client.get("/staff/dashboard")
+        self.assertEqual(dashboard.status_code, 200)
+        html = dashboard.get_data(as_text=True)
+        self.assertNotIn('aria-label="Settings"', html)
+        self.assertNotIn('topbar-settings-dropdown', html)
+        self.assertIn('aria-label="My Profile" title="My Profile"', html)
+
+        residents_page = self.client.get("/staff/residents")
+        self.assertEqual(residents_page.status_code, 200)
+        resident_html = residents_page.get_data(as_text=True)
+        self.assertIn("Manage Residents", resident_html)
+        self.assertNotIn('name="status"', resident_html)
+        self.assertIn("style.css?v=4", resident_html)
+
+        profile = self.client.get("/profile")
+        self.assertEqual(profile.status_code, 200)
+        self.assertIn(b"id=\"personal-information\"", profile.data)
+        self.assertIn(b"id=\"change-password\"", profile.data)
+        saved = self.client.post("/profile", data={
+            "action": "personal_info", "full_name": "Updated Staff Name",
+            "contact_number": "09171234567", "role": "admin", "office": "treasurer",
+            "is_super_admin": "1",
+        })
+        self.assertEqual(saved.status_code, 302)
+        self.assertIn("/profile#personal-information", saved.location)
+        conn = dbh.get_db()
+        updated = conn.execute("SELECT full_name,contact_number,role,office,password_hash,is_super_admin FROM users WHERE id=?", (staff_id,)).fetchone()
+        original_password_hash = updated["password_hash"]
+        conn.close()
+        self.assertEqual(tuple(updated[:4]), ("Updated Staff Name", "+639171234567", "staff", "bpso"))
+        self.assertEqual(updated["is_super_admin"], 0)
+
+        password_result = self.client.post("/profile/change-password", data={
+            "current_password": "SafePassword123", "new_password": "NewStaffPassword987",
+            "confirm_password": "NewStaffPassword987",
+        })
+        self.assertEqual(password_result.status_code, 302)
+        from werkzeug.security import check_password_hash
+        conn = dbh.get_db()
+        changed = conn.execute("SELECT password_hash,role,office FROM users WHERE id=?", (staff_id,)).fetchone()
+        conn.close()
+        self.assertTrue(check_password_hash(changed["password_hash"], "NewStaffPassword987"))
+        self.assertEqual((changed["role"], changed["office"]), ("staff", "bpso"))
+        self.assertNotEqual(original_password_hash, changed["password_hash"])
+
+        account_security = self.client.get("/account/security")
+        self.assertEqual(account_security.status_code, 200)
+        self.assertIn(b"BPSO (Public Safety)", account_security.data)
+        for admin_url in (
+            "/admin/settings/users", "/admin/administrators", "/admin/settings/backups",
+            "/admin/settings/security", "/admin/settings/barangay-information", "/admin/staff",
+        ):
+            self.assertEqual(self.client.get(admin_url).status_code, 403, admin_url)
+
+        self.set_session(self.regular_id)
+        self.assertEqual(self.client.get("/account/security").status_code, 403)
+
+    def test_staff_residents_uses_full_admin_table_with_staff_only_permissions(self):
+        staff_id = self.insert_bpso_staff()
+        conn = dbh.get_db()
+        resident_ids = []
+        for index in range(26):
+            cursor = conn.execute(
+                "INSERT INTO users(full_name,email,password_hash,role,address,contact_number) "
+                "VALUES (?,?,?,'resident',?,?)",
+                (f"Directory Resident {index:02d}", f"directory{index}@example.test",
+                 generate_password_hash("ResidentPass123"), "Purok 3, Holy Spirit", "09171234567"),
+            )
+            resident_ids.append(cursor.lastrowid)
+        conn.execute("UPDATE users SET profile_picture='missing-profile.png' WHERE id=?", (resident_ids[0],))
+        conn.commit()
+        conn.close()
+
+        self.set_session(staff_id)
+        first_page = self.client.get("/staff/residents")
+        self.assertEqual(first_page.status_code, 200)
+        html = first_page.get_data(as_text=True)
+        for column in ("Name", "Email", "Mobile Number", "Address", "Status", "Registered", "Actions"):
+            self.assertIn(column, html)
+        self.assertIn("Directory Resident 00", html)
+        self.assertNotIn("Directory Resident 25", html)
+        self.assertIn(f"/admin/residents/{resident_ids[0]}", html)
+        self.assertIn(f"/admin/residents/{resident_ids[0]}/edit", html)
+        self.assertIn('aria-label="More actions for Directory Resident 00"', html)
+        self.assertEqual(html.count("<tr>"), 26)  # one header row plus 25 resident rows
+        self.assertEqual(html.count("<td>") + html.count("<td "), 25 * 7)
+        self.assertIn("09171234567", html)
+        self.assertNotIn("Not provided", html)
+        self.assertIn("resident-avatar-fallback\" hidden>DR", html)
+        self.assertIn("onerror=\"this.hidden=true;this.nextElementSibling.hidden=false\"", html)
+        self.assertNotIn('name="contact_number"', html)
+        self.assertNotIn("Archive</button>", html)
+        self.assertNotIn("Restore</button>", html)
+        self.assertNotIn("Delete permanently", html)
+
+        second_page = self.client.get("/staff/residents?page=2&q=Directory")
+        self.assertEqual(second_page.status_code, 200)
+        second_html = second_page.get_data(as_text=True)
+        self.assertIn("Directory Resident 25", second_html)
+        self.assertIn("Showing 26&ndash;26 of 26 residents", second_html)
+        self.assertIn("q=Directory", second_html)
+
+        view = self.client.get(f"/admin/residents/{resident_ids[0]}")
+        edit = self.client.get(f"/admin/residents/{resident_ids[0]}/edit")
+        self.assertEqual(view.status_code, 200)
+        self.assertEqual(edit.status_code, 200)
+        self.assertIn(b"Back to Residents", view.data)
+        update = self.client.post(f"/admin/residents/{resident_ids[0]}/edit", data={
+            "full_name": "Updated Resident Name", "email": "directory0@example.test",
+            "address": "Purok 4", "contact_number": "09179998877",
+        })
+        self.assertEqual(update.status_code, 302)
+        self.assertEqual(update.location, "/staff/residents")
+        conn = dbh.get_db()
+        updated = conn.execute("SELECT full_name,address,contact_number FROM users WHERE id=?", (resident_ids[0],)).fetchone()
+        conn.close()
+        self.assertEqual(tuple(updated), ("Updated Resident Name", "Purok 4", "+639179998877"))
+
+        for action in ("toggle", "archive", "restore"):
+            self.assertEqual(self.client.post(f"/admin/residents/{resident_ids[0]}/{action}").status_code, 403)
+        self.assertEqual(self.client.get("/admin/residents/new").status_code, 403)
+
     def test_user_management_tabs_load_and_account_actions_preserve_records(self):
         self.set_session(self.founder_id)
 

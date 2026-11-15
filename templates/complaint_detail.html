@@ -67,7 +67,7 @@
   {% if current_user.role in ['staff','admin'] %}
   <div class="card">
     <h3>Update Status</h3>
-    <form method="POST" action="{{ url_for('update_complaint_status', complaint_id=c.id) }}" class="form-grid">
+    <form method="POST" action="{{ url_for('update_complaint_status', complaint_id=c.id) }}" class="form-grid" data-confirm-message="Save this concern status update?" data-confirm-label="Save update">
       <div class="form-row">
         <label>Status</label>
         <select name="status">

@@ -11,6 +11,6 @@
     <dt>Account status</dt><dd>{{ 'Archived' if resident.is_archived|int else resident.status|title }}</dd>
     <dt>Registered</dt><dd>{{ resident.created_at }}</dd>
   </dl>
-  <div class="actions-row"><a class="btn btn-primary" href="{{ url_for('edit_resident', resident_id=resident.id) }}">Edit</a><a class="btn btn-outline" href="{{ url_for('admin_residents') }}">Back to Residents</a></div>
+  <div class="actions-row"><a class="btn btn-primary" href="{{ url_for('edit_resident', resident_id=resident.id) }}">Edit</a><a class="btn btn-outline" href="{{ url_for('view_residents' if current_user.role == 'staff' else 'admin_residents') }}">Back to Residents</a></div>
 </div>
 {% endblock %}

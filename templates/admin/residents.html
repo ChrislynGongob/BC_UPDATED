@@ -1,81 +1,106 @@
 {% extends "base.html" %}
-{% block title %}Manage Residents — BarangayConnect{% endblock %}
+{% block title %}Manage Residents &mdash; BarangayConnect{% endblock %}
 {% block page_title %}Manage Residents{% endblock %}
 {% block content %}
 <form class="filter-form" method="GET">
   <div class="filter-grid">
-    <input type="text" name="q" value="{{ q }}" placeholder="Search by name or email">
-    <input type="text" name="address" value="{{ address }}" placeholder="Search address (street, barangay...)">
+    <input type="text" name="q" value="{{ q }}" placeholder="Search by name or email" aria-label="Search by name or email">
+    <input type="text" name="address" value="{{ address }}" placeholder="Search address (street, barangay...)" aria-label="Search by address">
     <select name="purok" aria-label="Purok">
       <option value="">All puroks</option>
       {% for p in puroks %}<option value="{{ p }}" {{ 'selected' if purok==p }}>Purok {{ p }}</option>{% endfor %}
       <option value="none" {{ 'selected' if purok=='none' }}>No purok in address</option>
     </select>
-    <select name="status" aria-label="Status">
+    {% if not is_staff %}<select name="status" aria-label="Status">
       <option value="">All statuses</option>
       <option value="active" {{ 'selected' if status=='active' }}>Active</option>
       <option value="inactive" {{ 'selected' if status=='inactive' }}>Inactive</option>
       <option value="archived" {{ 'selected' if status=='archived' }}>Archived</option>
-    </select>
+    </select>{% endif %}
   </div>
   <div class="actions-row">
     <button class="btn btn-primary btn-sm" type="submit">Apply filters</button>
-    {% if q or address or purok or status %}<a class="btn btn-outline btn-sm" href="{{ url_for('admin_residents') }}">Clear</a>{% endif %}
-    <span class="hint" style="align-self:center;">{{ rows|length }} resident(s)</span>
+    {% if q or address or purok or status %}<a class="btn btn-outline btn-sm" href="{{ url_for('view_residents' if is_staff else 'admin_residents') }}">Clear</a>{% endif %}
+    <span class="hint" style="align-self:center;">{{ total_rows }} resident(s)</span>
   </div>
 </form>
-<div class="actions-row" style="margin-bottom:14px;">
+{% if not is_staff %}<div class="actions-row" style="margin-bottom:14px;">
   <a class="btn btn-primary btn-sm" href="{{ url_for('create_resident') }}">Add Resident</a>
   {% if status != 'archived' %}<a class="btn btn-outline btn-sm" href="{{ url_for('admin_residents', status='archived') }}">View archived</a>{% endif %}
 </div>
 <p class="hint" style="margin-top:-10px; margin-bottom:14px;">
-  Mark a resident Inactive if they've moved away or asked to close their account — you'll typically
+  Mark a resident Inactive if they've moved away or asked to close their account &mdash; you'll typically
   learn this when they request a clearance for moving, or inform the barangay in person. This blocks
   their login without deleting their records.
-</p>
-<div class="card">
+</p>{% endif %}
+
+<div class="card resident-table-card">
   {% if rows %}
-  <div class="table-wrap"><table>
-    <tr><th>Name</th><th>Email</th><th>Mobile number</th><th>Address</th><th>Status</th><th>Registered</th><th>Actions</th></tr>
-    {% for u in rows %}
-    <tr>
-      <td class="name-cell">
-        {% if u.profile_picture %}
-        <img class="avatar-thumb" src="{{ url_for('serve_upload', subdir='profiles', stored_name=u.profile_picture) }}" alt="">
-        {% else %}
-        <div class="avatar-thumb-fallback">{{ u.full_name[0] }}</div>
-        {% endif %}
-        {{ u.full_name }}
-      </td>
-      <td>{{ u.email }}</td>
-      <td>
-        <form method="POST" action="{{ url_for('update_account_mobile', account_id=u.id) }}" style="display:flex; gap:6px; align-items:center;">
-          <input type="tel" name="contact_number" value="{{ u.contact_number or '' }}" aria-label="Mobile number for {{ u.full_name }}" placeholder="0917 123 4567" required>
-          <button class="btn btn-outline btn-sm" type="submit">Save</button>
-        </form>
-      </td>
-      <td>{{ u.address or '—' }}</td>
-      <td><span class="badge badge-{{ 'Approved' if u.status=='active' else 'Rejected' }}">{{ 'Archived' if u.is_archived|int else u.status }}</span></td>
-      <td class="muted">{{ u.created_at }}</td>
-      <td class="actions-row">
-        <a class="btn btn-outline btn-sm" href="{{ url_for('view_resident', resident_id=u.id) }}">View</a>
-        <a class="btn btn-outline btn-sm" href="{{ url_for('edit_resident', resident_id=u.id) }}">Edit</a>
-        {% if u.is_archived|int %}
-        <form method="POST" action="{{ url_for('restore_resident', resident_id=u.id) }}" onsubmit="return confirm('Restore this resident account?')">
-          <button class="btn btn-outline btn-sm" type="submit">Restore</button>
-        </form>
-        {% else %}
-        <form method="POST" action="{{ url_for('toggle_resident', resident_id=u.id) }}" onsubmit="return confirm('Change this resident account status?')">
-          <button class="btn btn-outline btn-sm" type="submit">{{ 'Mark Inactive' if u.status=='active' else 'Reactivate' }}</button>
-        </form>
-        <form method="POST" action="{{ url_for('archive_resident', resident_id=u.id) }}" onsubmit="return confirm('Archive this resident? Existing requests and complaints will be retained.')">
-          <button class="btn btn-outline btn-sm" type="submit">Archive</button>
-        </form>
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </table></div>
+  <div class="table-wrap resident-table-scroll" role="region" aria-label="Resident records" tabindex="0">
+    <table class="resident-table{{ ' resident-table-staff' if is_staff else '' }}">
+      <colgroup><col class="resident-col-name"><col class="resident-col-email"><col class="resident-col-mobile"><col class="resident-col-address"><col class="resident-col-status"><col class="resident-col-registered"><col class="resident-col-actions"></colgroup>
+      <thead><tr><th scope="col">Name</th><th scope="col">Email</th><th scope="col">Mobile Number</th><th scope="col">Address</th><th scope="col">Status</th><th scope="col">Registered</th><th scope="col">Actions</th></tr></thead>
+      <tbody>
+      {% for u in rows %}
+      <tr>
+        <td>
+          <div class="resident-name-cell">
+            <span class="resident-avatar" aria-hidden="true">
+              {% if u.profile_picture %}<img class="resident-avatar-image" src="{{ url_for('serve_upload', subdir='profiles', stored_name=u.profile_picture) }}" alt="" onerror="this.hidden=true;this.nextElementSibling.hidden=false">{% endif %}
+              {% set name_parts = u.full_name.split() %}
+              {% set resident_initials = (name_parts[0][0] ~ (name_parts[1][0] if name_parts|length > 1 else ''))|upper %}
+              <span class="resident-avatar-fallback" {% if u.profile_picture %}hidden{% endif %}>{{ resident_initials }}</span>
+            </span>
+            <span class="resident-name-text">{{ u.full_name }}</span>
+          </div>
+        </td>
+        <td class="resident-email-cell">{{ u.email }}</td>
+        <td>
+          {% if is_staff %}{{ u.contact_number or 'Not provided' }}{% else %}
+          <form class="resident-admin-mobile-form" method="POST" action="{{ url_for('update_account_mobile', account_id=u.id) }}">
+            <input type="tel" name="contact_number" value="{{ u.contact_number or '' }}" aria-label="Mobile number for {{ u.full_name }}" placeholder="0917 123 4567" required>
+            <button class="btn btn-outline btn-sm" type="submit">Save</button>
+          </form>{% endif %}
+        </td>
+        <td class="resident-address-cell">{% if u.address %}{{ u.address }}{% else %}&mdash;{% endif %}</td>
+        <td><span class="badge badge-{{ 'Approved' if u.status=='active' else 'Rejected' }}">{{ 'Archived' if u.is_archived|int else u.status|title }}</span></td>
+        <td class="muted resident-date-cell">{{ u.created_at }}</td>
+        <td>
+          <div class="resident-actions{{ ' resident-actions-staff' if is_staff else '' }}">
+            {% if is_staff %}
+            <a class="resident-icon-action" href="{{ url_for('view_resident', resident_id=u.id) }}" aria-label="View {{ u.full_name }}" title="View resident"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></a>
+            <a class="resident-icon-action" href="{{ url_for('edit_resident', resident_id=u.id) }}" aria-label="Edit {{ u.full_name }}" title="Edit resident"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5M4 20l4.2-.9L19 8.3a2.1 2.1 0 0 0-3-3L5.2 16.1 4 20Z"/><path d="M13 20h7"/></svg></a>
+            <button class="resident-icon-action resident-more-actions-trigger" type="button" aria-label="More actions for {{ u.full_name }}" title="More actions" popovertarget="resident-more-{{ u.id }}"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg></button>
+            <div class="resident-more-actions-menu" id="resident-more-{{ u.id }}" popover="auto">
+              <a href="{{ url_for('view_resident', resident_id=u.id) }}">View resident profile</a>
+              <a href="{{ url_for('edit_resident', resident_id=u.id) }}">Edit resident information</a>
+            </div>
+            {% else %}
+            <a class="btn btn-outline btn-sm" href="{{ url_for('view_resident', resident_id=u.id) }}">View</a>
+            <a class="btn btn-outline btn-sm" href="{{ url_for('edit_resident', resident_id=u.id) }}">Edit</a>
+            {% if u.is_archived|int %}
+            <form method="POST" action="{{ url_for('restore_resident', resident_id=u.id) }}" data-confirm-message="Restore this resident account?" data-confirm-label="Restore"><button class="btn btn-outline btn-sm" type="submit">Restore</button></form>
+            {% else %}
+            <form method="POST" action="{{ url_for('toggle_resident', resident_id=u.id) }}" data-confirm-message="Change this resident account status?" data-confirm-label="Confirm change"><button class="btn btn-outline btn-sm" type="submit">{{ 'Mark Inactive' if u.status=='active' else 'Reactivate' }}</button></form>
+            <form method="POST" action="{{ url_for('archive_resident', resident_id=u.id) }}" data-confirm-message="Archive this resident? Existing requests and complaints will be retained." data-confirm-label="Archive"><button class="btn btn-outline btn-sm" type="submit">Archive</button></form>
+            {% endif %}{% endif %}
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}<div class="empty-state">No residents found.</div>{% endif %}
 </div>
+{% if is_staff and page_count > 1 %}
+<nav class="resident-pagination" aria-label="Resident pages">
+  <span>Showing {{ (page - 1) * 25 + 1 }}&ndash;{{ [page * 25, total_rows]|min }} of {{ total_rows }} residents</span>
+  <div class="resident-pagination-links">
+    {% if page > 1 %}<a href="{{ url_for('view_residents', q=q or None, address=address or None, purok=purok or None, page=page-1) }}" aria-label="Previous page">&larr; Previous</a>{% else %}<span class="disabled">&larr; Previous</span>{% endif %}
+    {% for n in range(1, page_count + 1) %}{% if n == page %}<span class="current" aria-current="page">{{ n }}</span>{% else %}<a href="{{ url_for('view_residents', q=q or None, address=address or None, purok=purok or None, page=n) }}">{{ n }}</a>{% endif %}{% endfor %}
+    {% if page < page_count %}<a href="{{ url_for('view_residents', q=q or None, address=address or None, purok=purok or None, page=page+1) }}" aria-label="Next page">Next &rarr;</a>{% else %}<span class="disabled">Next &rarr;</span>{% endif %}
+  </div>
+</nav>
+{% endif %}
 {% endblock %}

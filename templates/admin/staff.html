@@ -83,10 +83,10 @@
       <td><span class="badge badge-{{ 'Approved' if u.status=='active' else 'Rejected' }}">{{ u.status }}</span></td>
       <td class="muted">{{ u.created_at }}</td>
       <td class="actions-row">
-        <form method="POST" action="{{ url_for('toggle_staff', staff_id=u.id) }}" onsubmit="return confirm('Change this staff account status?')">
+        <form method="POST" action="{{ url_for('toggle_staff', staff_id=u.id) }}" data-confirm-message="Change this staff account status?" data-confirm-label="Confirm change">
           <button class="btn btn-outline btn-sm" type="submit">{{ 'Deactivate' if u.status=='active' else 'Activate' }}</button>
         </form>
-        <form method="POST" action="{{ url_for('reset_staff_password', staff_id=u.id) }}" onsubmit="return confirm('Reset this staff member’s sign-in credentials?')">
+        <form method="POST" action="{{ url_for('reset_staff_password', staff_id=u.id) }}" data-confirm-message="Reset this staff member’s sign-in credentials?" data-confirm-label="Reset password">
           <button class="btn btn-outline btn-sm" type="submit">Reset Password</button>
         </form>
       </td>

@@ -2364,6 +2364,26 @@ def mark_notifications_read(user):
 def profile(user):
     conn = dbh.get_db()
     if request.method == "POST":
+        if request.form.get("action") == "personal_info":
+            if user["role"] != "staff":
+                conn.close()
+                abort(403)
+            full_name = request.form.get("full_name", "").strip()
+            raw_contact = request.form.get("contact_number", "").strip()
+            contact_number = _normalize_ph_mobile(raw_contact) if raw_contact else None
+            if not full_name or len(full_name) > 120 or (raw_contact and not contact_number):
+                conn.close()
+                flash("Enter a valid name and Philippine mobile number.", "error")
+                return redirect(url_for("profile") + "#personal-information")
+            conn.execute(
+                "UPDATE users SET full_name=?,contact_number=? WHERE id=? AND role='staff'",
+                (full_name, contact_number, user["id"]),
+            )
+            _audit(conn, user, "Updated own staff personal information", target=user["email"], module="accounts")
+            conn.commit()
+            conn.close()
+            flash("Personal information updated.", "success")
+            return redirect(url_for("profile") + "#personal-information")
         photo = request.files.get("profile_picture")
         if not photo or photo.filename == "":
             flash("Please choose an image to upload.", "error")
@@ -2395,6 +2415,16 @@ def profile(user):
         "profile.html",
         profile_image_max_size=PROFILE_IMAGE_MAX_SIZE,
         profile_image_max_size_mb=PROFILE_IMAGE_MAX_SIZE // (1024 * 1024),
+    )
+
+
+@app.route("/account/security")
+@login_required("staff")
+def staff_account_security(user):
+    office = OFFICES.get(user["office"])
+    return render_template(
+        "staff/account_security.html", account=user,
+        office_label=office["label"] if office else "Not assigned",
     )
 
 
@@ -2787,9 +2817,21 @@ def _residents_query(user):
         rows = [r for r in rows if dbh.purok_of(r["address"]) == purok]
     else:
         purok = ""
-    template = "admin/residents.html" if is_admin else "staff/residents.html"
-    return render_template(template, rows=rows, q=q, address=address, purok=purok,
-                           puroks=puroks, status=status)
+    total_rows = len(rows)
+    page_size = 25
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except (TypeError, ValueError):
+        page = 1
+    page_count = max(1, (total_rows + page_size - 1) // page_size)
+    if not is_admin:
+        page = min(page, page_count)
+        rows = rows[(page - 1) * page_size:page * page_size]
+    else:
+        page = 1
+    return render_template("admin/residents.html", rows=rows, q=q, address=address, purok=purok,
+                           puroks=puroks, status=status, is_staff=not is_admin,
+                           total_rows=total_rows, page=page, page_count=page_count)
 
 
 @app.route("/staff/residents")
@@ -2967,12 +3009,13 @@ def create_resident(user):
 
 
 @app.route("/admin/residents/<int:resident_id>")
-@login_required("admin")
+@login_required("admin", "staff")
 def view_resident(user, resident_id):
+    visibility = " AND is_archived=0" if user["role"] == "staff" else ""
     conn = dbh.get_db()
     resident = conn.execute(
         "SELECT id,full_name,email,address,contact_number,status,is_archived,created_at "
-        "FROM users WHERE id=? AND role='resident'", (resident_id,),
+        "FROM users WHERE id=? AND role='resident'" + visibility, (resident_id,),
     ).fetchone()
     conn.close()
     if not resident:
@@ -2981,12 +3024,13 @@ def view_resident(user, resident_id):
 
 
 @app.route("/admin/residents/<int:resident_id>/edit", methods=["GET", "POST"])
-@login_required("admin")
+@login_required("admin", "staff")
 def edit_resident(user, resident_id):
+    visibility = " AND is_archived=0" if user["role"] == "staff" else ""
     conn = dbh.get_db()
     resident = conn.execute(
         "SELECT id,full_name,email,address,contact_number,status,is_archived,created_at "
-        "FROM users WHERE id=? AND role='resident'", (resident_id,),
+        "FROM users WHERE id=? AND role='resident'" + visibility, (resident_id,),
     ).fetchone()
     if not resident:
         conn.close()
@@ -3021,7 +3065,7 @@ def edit_resident(user, resident_id):
         conn.commit()
         conn.close()
         flash("Resident details updated.", "success")
-        return redirect(url_for("admin_residents"))
+        return redirect(url_for("view_residents" if user["role"] == "staff" else "admin_residents"))
     conn.close()
     return render_template("admin/resident_form.html", resident=resident)
 
