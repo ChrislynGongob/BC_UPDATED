@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="csrf-token" content="{{ csrf_form_token }}">
 <title>{% block title %}BarangayConnect{% endblock %}</title>
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=7) }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css', v=8) }}">
 {% block extra_head %}{% endblock %}
 </head>
 <body data-role="{{ current_user.role if current_user else '' }}" class="{% if current_user %}has-shell{% else %}auth-body{% endif %}{% if current_user and current_user.role == 'resident' and request.endpoint == 'resident_dashboard' %} resident-dashboard-page{% endif %}">
@@ -54,7 +54,7 @@
         <div class="nav-section-label">Overview</div>
         <a href="{{ url_for('admin_dashboard') }}" class="{{ 'active' if request.endpoint=='admin_dashboard' }}"><span class="nav-icon" aria-hidden="true">▦</span>Dashboard</a>
         <div class="nav-section-label">Services</div>
-        <a href="{{ url_for('admin_requests') }}" class="{{ 'active' if request.endpoint in ['admin_requests','view_request'] }}"><span class="nav-icon" aria-hidden="true">▤</span>Requests{% if nav_new_requests %}<span class="pill-badge" aria-label="{{ nav_new_requests }} new requests" title="New requests">{{ nav_new_requests }}</span>{% endif %}</a>
+        <a href="{{ url_for('admin_requests') }}" class="{{ 'active' if request.endpoint in ['admin_requests','view_request'] }}"><span class="nav-icon" aria-hidden="true">▤</span>Requests</a>
         <a href="{{ url_for('admin_complaints') }}" class="{{ 'active' if request.endpoint in ['admin_complaints','view_complaint'] }}"><span class="nav-icon" aria-hidden="true">⚑</span>Concerns{% if nav_new_complaints %}<span class="pill-badge" aria-label="{{ nav_new_complaints }} new concerns" title="New concerns">{{ nav_new_complaints }}</span>{% endif %}</a>
         <a href="{{ url_for('community_issue_management') }}" class="{{ 'active' if request.endpoint in ['community_issue_management','community_issue_management_detail'] }}"><span class="nav-icon" aria-hidden="true">◎</span>Clustered Issues</a>
         <a href="{{ url_for('admin_announcements') }}" class="{{ 'active' if request.endpoint=='admin_announcements' }}"><span class="nav-icon" aria-hidden="true">◈</span>Announcements</a>

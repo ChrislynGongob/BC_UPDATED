@@ -701,6 +701,17 @@ def active_staff_for_offices(conn, offices):
     ).fetchall()
 
 
+def initialize_staff_request_reads(conn, request_id, request_type):
+    """Create independent unread state for each active staff member assigned to this type."""
+    staff_rows = active_staff_for_offices(conn, offices_for_request_type(request_type))
+    for staff_row in staff_rows:
+        conn.execute(
+            "INSERT OR IGNORE INTO staff_request_reads(request_id,staff_id,is_read) VALUES(?,?,0)",
+            (request_id, staff_row["id"]),
+        )
+    return staff_rows
+
+
 def valid_assignee(conn, staff_id, offices):
     """True if staff_id is an active staff account belonging to one of the offices."""
     clause, params = _in_clause(offices)
@@ -1033,25 +1044,21 @@ def inject_globals():
             daily_concerns_remaining = allowance["remaining"]
             conn.commit()
         types = handled_request_types(user)
-        if types:
-            clause, params = _in_clause(types)
-            count_expressions.append(
-                f"(SELECT COUNT(*) FROM requests WHERE status='Submitted' AND request_type {clause}) new_requests"
-            )
-            count_params.extend(params)
         if can_handle_complaints(user):
             count_expressions.append(
                 "(SELECT COUNT(*) FROM complaints WHERE status='Pending') new_complaints"
             )
         nav_counts = conn.execute("SELECT " + ", ".join(count_expressions), count_params).fetchone()
         unread = nav_counts["unread_count"]
-        nav_columns = nav_counts.keys()
-        new_requests = (
-            nav_counts["new_requests"] if "new_requests" in nav_columns else 0
-        )
-        new_complaints = (
-            nav_counts["new_complaints"] if "new_complaints" in nav_columns else 0
-        )
+        new_complaints = nav_counts["new_complaints"] if "new_complaints" in nav_counts.keys() else 0
+        if user["role"] == "staff" and types:
+            clause, params = _in_clause(types)
+            new_requests = conn.execute(
+                "SELECT COUNT(*) AS c FROM requests r "
+                "LEFT JOIN staff_request_reads sr ON sr.request_id=r.id AND sr.staff_id=? "
+                f"WHERE r.request_type {clause} AND COALESCE(sr.is_read,0)=0",
+                [user["id"]] + params,
+            ).fetchone()["c"]
         conn.close()
     safe_user = None
     if user:
@@ -1852,7 +1859,7 @@ def new_request(user):
         dbh.log_status(conn, "request", req_id, "Submitted", user["full_name"])
         dbh.notify(conn, user["id"], f"Your request {ref} ({rtype}) has been submitted.", url_for("view_request", request_id=req_id))
         # Let the office that handles this document type know there is something new.
-        for staff_row in active_staff_for_offices(conn, offices_for_request_type(rtype)):
+        for staff_row in initialize_staff_request_reads(conn, req_id, rtype):
             dbh.notify(conn, staff_row["id"], f"New {rtype} request {ref} was submitted.", url_for("view_request", request_id=req_id))
         conn.commit()
         conn.close()
@@ -1879,6 +1886,14 @@ def view_request(user, request_id):
     if user["role"] == "staff" and not can_handle_request_type(user, row["request_type"]):
         conn.close()
         abort(403)
+    if user["role"] == "staff":
+        conn.execute(
+            "INSERT INTO staff_request_reads(request_id,staff_id,is_read,read_at) "
+            "VALUES(?,?,1,datetime('now')) ON CONFLICT(request_id,staff_id) DO UPDATE SET "
+            "is_read=1, read_at=COALESCE(staff_request_reads.read_at,datetime('now'))",
+            (request_id, user["id"]),
+        )
+        conn.commit()
     resident = conn.execute("SELECT * FROM users WHERE id=?", (row["resident_id"],)).fetchone()
     files = conn.execute("SELECT * FROM request_files WHERE request_id=?", (request_id,)).fetchall()
     staff_list = active_staff_for_offices(conn, offices_for_request_type(row["request_type"]))
@@ -2642,11 +2657,18 @@ def staff_requests(user):
     conn = dbh.get_db()
     status = request.args.get("status", "")
     clause, params = _in_clause(types)
-    q = f"SELECT r.*, u.full_name resident_name FROM requests r JOIN users u ON u.id=r.resident_id WHERE r.request_type {clause}"
+    q = (
+        "SELECT r.*, u.full_name resident_name, "
+        "CASE WHEN COALESCE(sr.is_read,0)=0 THEN 1 ELSE 0 END AS is_unread "
+        "FROM requests r JOIN users u ON u.id=r.resident_id "
+        "LEFT JOIN staff_request_reads sr ON sr.request_id=r.id AND sr.staff_id=? "
+        f"WHERE r.request_type {clause}"
+    )
+    params = [user["id"]] + params
     if status:
         q += " AND r.status=?"
         params.append(status)
-    q += " ORDER BY r.created_at DESC"
+    q += " ORDER BY r.created_at DESC, r.id DESC"
     rows = conn.execute(q, params).fetchall()
     conn.close()
     return render_template("staff/request_queue.html", rows=rows, statuses=REQUEST_STATUSES,

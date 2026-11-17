@@ -19,8 +19,8 @@
   <div class="table-wrap"><table>
     <tr><th>Reference</th><th>Resident</th><th>Type</th><th>Status</th><th>Filed</th><th></th></tr>
     {% for r in rows %}
-    <tr>
-      <td class="ref-code">{{ r.reference_no }}</td>
+    <tr class="{{ 'request-row-unread' if r.is_unread else '' }}">
+      <td><span class="request-reference-cell">{% if r.is_unread %}<span class="request-unread-dot" aria-label="Unread request"></span><span class="request-new-badge">NEW</span>{% endif %}<span class="ref-code">{{ r.reference_no }}</span></span></td>
       <td>{{ r.resident_name }}</td>
       <td>{{ r.request_type }}</td>
       <td><span class="badge badge-{{ r.status.replace(' ','.') }}">{{ r.status }}</span></td>

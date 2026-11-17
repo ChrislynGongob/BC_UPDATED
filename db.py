@@ -640,6 +640,38 @@ def migrate_db():
             f"({scope} IN ('Certificate of Indigency','Certificate of Residency') "
             "OR LOWER(COALESCE(position,'')) LIKE '%secretar%')")
     req_cols = [r["name"] for r in conn.execute("PRAGMA table_info(requests)").fetchall()]
+    if req_cols:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS staff_request_reads ("
+            "request_id INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE, "
+            "staff_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+            "is_read INTEGER NOT NULL DEFAULT 0 CHECK (is_read IN (0,1)), "
+            "read_at TEXT, PRIMARY KEY(request_id, staff_id))"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_staff_request_reads_staff_unread "
+            "ON staff_request_reads(staff_id, is_read)"
+        )
+        if all(column in req_cols for column in ("reference_no", "request_type", "created_at")):
+            has_notifications = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='notifications'"
+            ).fetchone() is not None
+            unread_notification = (
+                "EXISTS (SELECT 1 FROM notifications n WHERE n.user_id=u.id "
+                "AND n.link='/requests/' || r.id "
+                "AND n.message='New ' || r.request_type || ' request ' || r.reference_no || ' was submitted.' "
+                "AND n.is_read=0)"
+                if has_notifications else "0"
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO staff_request_reads(request_id,staff_id,is_read,read_at) "
+                "SELECT r.id,u.id,CASE WHEN " + unread_notification + " THEN 0 ELSE 1 END, "
+                "CASE WHEN " + unread_notification + " THEN NULL ELSE COALESCE(r.created_at,datetime('now')) END "
+                "FROM requests r JOIN users u ON u.role='staff' AND u.status='active' "
+                "WHERE (r.request_type='Barangay Clearance' AND u.office='treasurer') "
+                "OR (r.request_type IN ('Certificate of Residency','Certificate of Indigency') "
+                "AND u.office='secretary')"
+            )
     if req_cols and "registered_voter" not in req_cols:
         conn.execute("ALTER TABLE requests ADD COLUMN registered_voter INTEGER NOT NULL DEFAULT 0")
     if req_cols:

@@ -314,6 +314,11 @@ tr:last-child td { border-bottom: none; }
 .badge-payment-unpaid { background: #FDF1DC; color: #A16207; }
 .badge-payment-paid { background: #E1F7EC; color: #157347; }
 .badge-payment-not-required { background: #E4ECFB; color: #2451B0; }
+.request-row-unread td { background: #F0F8FF; }
+.request-row-unread:hover td { background: #E7F3FC; }
+.request-reference-cell { display: inline-flex; align-items: center; gap: 7px; }
+.request-unread-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #0F9DCE; }
+.request-new-badge { display: inline-block; border-radius: 999px; background: #DDF3FB; color: #086B8F; padding: 2px 6px; font-size: 9px; font-weight: 800; letter-spacing: .04em; }
 
 /* ---------------------------------------------------------------- priority */
 .priority-High { background: #FDF1DC; color: #A16207; }

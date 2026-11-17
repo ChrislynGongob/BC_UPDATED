@@ -81,6 +81,16 @@ CREATE TABLE IF NOT EXISTS request_files (
     uploaded_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS staff_request_reads (
+    request_id      INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+    staff_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    is_read         INTEGER NOT NULL DEFAULT 0 CHECK (is_read IN (0,1)),
+    read_at         TEXT,
+    PRIMARY KEY (request_id, staff_id)
+);
+CREATE INDEX IF NOT EXISTS idx_staff_request_reads_staff_unread
+    ON staff_request_reads(staff_id, is_read);
+
 CREATE TABLE IF NOT EXISTS complaints (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     reference_no    TEXT NOT NULL UNIQUE,

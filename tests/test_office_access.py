@@ -238,20 +238,22 @@ class OfficeAccessTests(unittest.TestCase):
                 self.assertIn("Office: <strong>BPSO (Public Safety)</strong> — handles complaints", html)
 
     def test_navigation_badges_count_new_items_with_office_scope(self):
+        dbh.migrate_db()
         conn = dbh.get_db()
         resident_id = conn.execute("SELECT id FROM users WHERE role='resident' LIMIT 1").fetchone()["id"]
-        before_requests = {
-            office: conn.execute(
-                "SELECT COUNT(*) FROM requests WHERE status='Submitted' AND request_type IN ({})".format(
+        before_requests = {}
+        for office, (_, types, _) in OFFICES.items():
+            staff_id = conn.execute(
+                "SELECT id FROM users WHERE role='staff' AND office=? LIMIT 1", (office,)
+            ).fetchone()["id"]
+            before_requests[office] = conn.execute(
+                "SELECT COUNT(*) FROM requests r LEFT JOIN staff_request_reads sr "
+                "ON sr.request_id=r.id AND sr.staff_id=? "
+                "WHERE r.request_type IN ({}) AND COALESCE(sr.is_read,0)=0".format(
                     ",".join("?" for _ in types)
                 ),
-                tuple(types),
+                (staff_id, *types),
             ).fetchone()[0] if types else 0
-            for office, (_, types, _) in OFFICES.items()
-        }
-        before_requests["admin"] = conn.execute(
-            "SELECT COUNT(*) FROM requests WHERE status='Submitted'"
-        ).fetchone()[0]
         before_complaints = conn.execute(
             "SELECT COUNT(*) FROM complaints WHERE status='Pending'"
         ).fetchone()[0]
@@ -264,11 +266,13 @@ class OfficeAccessTests(unittest.TestCase):
                     (f"TEST-NAV-COUNT-REQ-{index}", resident_id, request_type),
                 )
                 request_ids.append(cursor.lastrowid)
+                A.initialize_staff_request_reads(conn, cursor.lastrowid, request_type)
                 cursor = conn.execute(
                     "INSERT INTO requests (reference_no, resident_id, request_type, status) VALUES (?,?,?,'Processing')",
                     (f"TEST-NAV-COUNT-PROC-{index}", resident_id, request_type),
                 )
                 request_ids.append(cursor.lastrowid)
+                A.initialize_staff_request_reads(conn, cursor.lastrowid, request_type)
             cursor = conn.execute(
                 "INSERT INTO complaints (reference_no, resident_id, category, description, status) "
                 "VALUES ('TEST-NAV-COUNT-CMP', ?, 'Others', 'Badge count test', 'Pending')",
@@ -295,7 +299,7 @@ class OfficeAccessTests(unittest.TestCase):
         try:
             for office, (_, types, can_c) in OFFICES.items():
                 html = self.staff_client(office).get("/staff/dashboard").get_data(as_text=True)
-                expected_requests = before_requests[office] + len(types)
+                expected_requests = before_requests[office] + 2 * len(types)
                 expected_complaints = before_complaints + 1 if can_c else None
                 self.assertEqual(
                     badge_count(html, "/staff/requests") if types else None,
@@ -305,7 +309,7 @@ class OfficeAccessTests(unittest.TestCase):
                 self.assertEqual(badge_count(html, "/staff/complaints"), expected_complaints, office)
 
             html = admin_client().get("/admin/dashboard").get_data(as_text=True)
-            self.assertEqual(badge_count(html, "/admin/requests"), before_requests["admin"] + len(ALL_TYPES))
+            self.assertEqual(badge_count(html, "/admin/requests"), 0)
             self.assertEqual(badge_count(html, "/admin/complaints"), before_complaints + 1)
         finally:
             conn = dbh.get_db()
