@@ -29,6 +29,8 @@
     </div>
     {% if issue.pending_verification %}
     <form method="POST" action="{{ url_for('verify_community_issue_reports', issue_id=issue.id) }}">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
       <button class="btn btn-primary btn-sm" type="submit">Verify All Pending</button>
     </form>
     {% endif %}
@@ -55,6 +57,8 @@
         <a class="btn btn-outline btn-sm" href="{{ url_for('view_complaint', complaint_id=report.id) }}">Open Concern</a>
         {% if not report.is_verified %}
         <form method="POST" action="{{ url_for('verify_community_issue_reports', issue_id=issue.id) }}">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
           <input type="hidden" name="report_id" value="{{ report.id }}">
           <button class="btn btn-primary btn-sm" type="submit">Verify Report</button>
         </form>
@@ -73,6 +77,8 @@
     </div>
   </div>
   <form method="POST" action="{{ url_for('update_community_issue_status', issue_id=issue.id) }}" class="community-status-form">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <div class="filter-select">
       <label for="community-status">Issue status</label>
       <select id="community-status" name="status" required>

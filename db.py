@@ -642,6 +642,29 @@ def migrate_db():
     req_cols = [r["name"] for r in conn.execute("PRAGMA table_info(requests)").fetchall()]
     if req_cols and "registered_voter" not in req_cols:
         conn.execute("ALTER TABLE requests ADD COLUMN registered_voter INTEGER NOT NULL DEFAULT 0")
+    if req_cols:
+        for column, definition in (
+            ("payment_status", "TEXT NOT NULL DEFAULT 'Unpaid' CHECK (payment_status IN ('Unpaid','Paid','Not Required'))"),
+            ("amount_paid", "NUMERIC"),
+            ("amount_received", "NUMERIC"),
+            ("change_given", "NUMERIC NOT NULL DEFAULT 0"),
+            ("payment_at", "TEXT"),
+            ("payment_recorded_by", "INTEGER REFERENCES users(id)"),
+            ("official_receipt_no", "TEXT"),
+            ("released_at", "TEXT"),
+            ("released_by", "INTEGER REFERENCES users(id)"),
+        ):
+            if column not in req_cols:
+                conn.execute(f"ALTER TABLE requests ADD COLUMN {column} {definition}")
+        if "computed_fee" in req_cols:
+            conn.execute("UPDATE requests SET payment_status='Not Required' WHERE computed_fee=0 AND payment_status='Unpaid'")
+        if "amount_paid" in req_cols:
+            conn.execute(
+                "UPDATE requests SET amount_received=amount_paid "
+                "WHERE payment_status='Paid' AND amount_received IS NULL"
+            )
+        if "status" in req_cols:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_requests_payment_release ON requests(payment_status, status)")
     complaint_cols = [r["name"] for r in conn.execute("PRAGMA table_info(complaints)").fetchall()]
     if complaint_cols and "community_issue_id" not in complaint_cols:
         conn.execute("ALTER TABLE complaints ADD COLUMN community_issue_id INTEGER REFERENCES community_issues(id)")

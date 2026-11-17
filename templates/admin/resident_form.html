@@ -4,6 +4,8 @@
 {% block content %}
 <div class="card" style="max-width:720px;">
   <form method="POST" class="form-grid">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <div class="form-row"><label for="full_name">Full name</label><input id="full_name" name="full_name" maxlength="120" required value="{{ resident.full_name if resident else '' }}"></div>
     <div class="form-row"><label for="email">Email</label><input id="email" type="email" name="email" maxlength="254" required value="{{ resident.email if resident else '' }}"></div>
     <div class="form-row"><label for="contact_number">Mobile number</label><input id="contact_number" type="tel" name="contact_number" value="{{ resident.contact_number if resident else '' }}" placeholder="0917 123 4567"></div>

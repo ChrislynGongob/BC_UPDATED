@@ -7,6 +7,8 @@
   <a class="announcement-back-link" href="{{ url_for('admin_announcements') }}" aria-label="Back to announcements">&larr; Announcements</a>
   <p class="muted">Update the announcement content and publication settings.</p>
   <form method="POST" enctype="multipart/form-data" class="form-grid" data-confirm-message="Save these announcement changes?" data-confirm-label="Save changes">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <div class="form-row"><label for="announcement-title">Title</label><input id="announcement-title" name="title" type="text" maxlength="160" required value="{{ values.get('title', announcement.title if announcement else '') }}"></div>
     <div class="form-row"><label for="announcement-message">Description or message</label><textarea id="announcement-message" name="message" maxlength="20000" rows="7" required>{{ values.get('message', announcement.message if announcement else '') }}</textarea></div>
     <div class="announcement-form-options">

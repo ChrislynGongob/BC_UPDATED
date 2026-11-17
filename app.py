@@ -11,8 +11,10 @@ import secrets
 import shutil
 import threading
 import time
+from decimal import Decimal, InvalidOperation
 from functools import wraps
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import random
 
 from flask import (
@@ -159,6 +161,7 @@ COMPLAINT_CATEGORIES = [
     "Sanitation", "Public Safety", "Domestic Concern", "Others",
 ]
 REQUEST_STATUSES = ["Submitted", "Under Review", "Processing", "Approved", "Rejected", "Completed"]
+BARANGAY_TIMEZONE = ZoneInfo("Asia/Manila")
 COMPLAINT_STATUSES = ["Pending", "Under Review", "Scheduled", "Resolved", "Closed", "Rejected"]
 PRIORITY_LEVELS = ["High", "Normal"]
 COMPLAINT_STATUS_COLORS = {
@@ -206,12 +209,42 @@ app.config["REQUEST_TIMING_LOGGING"] = os.environ.get(
 _start_admin_mfa, _admin_reset_mfa_valid = register_admin_mfa(app, dbh, email_service)
 _db_ready = False
 _db_startup_lock = threading.Lock()
+CSRF_SESSION_KEY = "_csrf_token"
+
+
+def _get_csrf_form_token():
+    token = session.get(CSRF_SESSION_KEY)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session[CSRF_SESSION_KEY] = token
+    return token
 
 
 @app.before_request
 def _start_request_timer():
     if app.config["REQUEST_TIMING_LOGGING"]:
         g._request_started_at = time.perf_counter()
+
+
+@app.before_request
+def _protect_state_changing_requests():
+    """Require a session-bound token for browser and cookie-authenticated mutations."""
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return None
+    # This unauthenticated JSON endpoint does not establish a cookie session;
+    # browser login forms remain protected by the regular synchronizer token.
+    if request.endpoint == "api_login":
+        return None
+
+    expected = session.get(CSRF_SESSION_KEY, "")
+    supplied = request.headers.get("X-CSRF-Token", "") or request.form.get("_csrf_token", "")
+    if (
+        not isinstance(expected, str)
+        or not isinstance(supplied, str)
+        or not expected
+        or not hmac.compare_digest(expected, supplied)
+    ):
+        abort(400, description="The request could not be verified. Reload the page and try again.")
 
 
 @app.before_request
@@ -606,8 +639,47 @@ def can_handle_complaints(user):
     return False
 
 
+def request_payment_status(row):
+    """Derive the display status from the original fee snapshot and receipt state."""
+    fee = row["computed_fee"]
+    if fee is not None and int(fee) == 0:
+        return "Not Required"
+    status = row["payment_status"] or "Unpaid"
+    return status if status in {"Unpaid", "Paid"} else "Unpaid"
+
+
+def payment_ui_state(row):
+    """Map workflow and fee state to the Treasurer payment table's display state."""
+    fee = row["computed_fee"]
+    if fee is not None and int(fee) == 0:
+        return "Payment Not Required", "na"
+    if request_payment_status(row) == "Paid":
+        return "Paid", "paid"
+    if row["status"] in {"Rejected", "Completed"}:
+        return "Not Payable", "na"
+    if row["status"] == "Approved" and fee is not None and int(fee) > 0:
+        return "Ready to Pay", "ready"
+    return "Not Yet Eligible", "na"
+
+
 def offices_for_request_type(rtype):
     return [k for k, v in OFFICES.items() if rtype in v["requests"]]
+
+
+def payment_request_types_for_office(office):
+    """Request types this office may collect for under existing routing rules."""
+    office_cfg = OFFICES.get(office)
+    if not office_cfg:
+        return []
+    payment_office_labels = {
+        office_cfg["label"].strip().casefold(),
+        f"{office_cfg['label']} Office".strip().casefold(),
+    }
+    return [
+        rtype for rtype in REQUEST_TYPES
+        if office in offices_for_request_type(rtype)
+        or (PAYMENT_LOCATIONS.get(rtype) or "").strip().casefold() in payment_office_labels
+    ]
 
 
 def offices_for_complaints():
@@ -987,6 +1059,7 @@ def inject_globals():
         safe_user = {key: user[key] for key in user.keys() if key not in sensitive}
     return dict(
         current_user=safe_user, unread_count=unread, now=datetime.now(),
+        csrf_form_token=_get_csrf_form_token(),
         is_founding_admin_user=is_founding_admin(user),
         nav_requests=bool(user and handled_request_types(user)),
         nav_complaints=bool(user and can_handle_complaints(user)),
@@ -1144,8 +1217,10 @@ def login():
         if user["role"] == "admin":
             return _start_admin_mfa(user)
         if user["must_reset_pw"]:
+            session.clear()
             session["pending_reset_user"] = user["id"]
             return redirect(url_for("first_login_reset"))
+        session.clear()
         session["user_id"] = user["id"]
         session["role"] = user["role"]
         session["auth_version"] = int(_user_value(user, "auth_version", 0) or 0)
@@ -1530,7 +1605,7 @@ def reset_password(token):
     return render_template("reset_password.html", token_valid=True, token=token)
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["POST"])
 def logout():
     user = current_user()
     if user:
@@ -1704,10 +1779,10 @@ def new_request(user):
         ref = dbh.gen_reference("REQ")
         cur = conn.execute(
             "INSERT INTO requests (reference_no, resident_id, request_type, purpose, details, contact_number, "
-            "request_address, civil_status, age, computed_fee, num_copies, claiming_date, has_representative, "
-            "representative_name, representative_id_type, registered_voter) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "request_address, civil_status, age, computed_fee, payment_status, num_copies, claiming_date, has_representative, "
+            "representative_name, representative_id_type, registered_voter) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (ref, user["id"], rtype, purpose, details, contact_number, request_address, civil_status, age,
-             computed_fee, num_copies, claiming_date or None, int(has_representative),
+             computed_fee, "Not Required" if computed_fee == 0 else "Unpaid", num_copies, claiming_date or None, int(has_representative),
              representative_name or None, representative_id_type or None,
              int(registered_voter and rtype == "Certificate of Residency")),
         )
@@ -1811,6 +1886,12 @@ def view_request(user, request_id):
         "SELECT * FROM status_history WHERE entity_type='request' AND entity_id=? ORDER BY created_at ASC",
         (request_id,),
     ).fetchall()
+    payment_recorder = conn.execute(
+        "SELECT full_name FROM users WHERE id=?", (row["payment_recorded_by"],)
+    ).fetchone() if row["payment_recorded_by"] else None
+    releaser = conn.execute(
+        "SELECT full_name FROM users WHERE id=?", (row["released_by"],)
+    ).fetchone() if row["released_by"] else None
     barangay_address = dbh.get_setting(conn, "barangay_address", "")
     conn.close()
     return render_template(
@@ -1820,6 +1901,9 @@ def view_request(user, request_id):
         claim_location=CLAIM_LOCATIONS.get(row["request_type"], DEFAULT_CLAIM_LOCATION),
         payment_location=PAYMENT_LOCATIONS.get(row["request_type"]),
         barangay_address=barangay_address,
+        payment_status=request_payment_status(row),
+        payment_recorder=payment_recorder["full_name"] if payment_recorder else None,
+        releaser=releaser["full_name"] if releaser else None,
     )
 
 
@@ -2569,6 +2653,115 @@ def staff_requests(user):
                            active_status=status, handled_types=types)
 
 
+@app.route("/staff/payments", methods=["GET", "POST"])
+@login_required("staff")
+def staff_payments(user):
+    if user["office"] != "treasurer":
+        abort(403)
+    payment_types = payment_request_types_for_office(user["office"])
+    type_clause, type_params = _in_clause(payment_types)
+    conn = dbh.get_db()
+    if request.method == "POST":
+        raw_amount = (request.form.get("amount_received") or "").strip()
+        raw_payment_at = (request.form.get("payment_at") or "").strip()
+        receipt = (request.form.get("official_receipt_no") or "").strip()
+        if len(receipt) > 80:
+            conn.close()
+            flash("Official receipt number must be 80 characters or fewer.", "error")
+            return redirect(url_for("staff_payments"))
+        try:
+            amount = Decimal(raw_amount)
+            if not amount.is_finite() or amount < 0 or amount > Decimal("9999999999.99"):
+                raise InvalidOperation
+            if amount.quantize(Decimal("0.01")) != amount:
+                raise InvalidOperation
+        except (InvalidOperation, ValueError):
+            conn.close()
+            flash("Enter a valid, non-negative amount received.", "error")
+            return redirect(url_for("staff_payments"))
+        try:
+            payment_at = datetime.strptime(raw_payment_at, "%Y-%m-%dT%H:%M").replace(tzinfo=BARANGAY_TIMEZONE)
+        except ValueError:
+            conn.close()
+            flash("Enter a valid payment date and time.", "error")
+            return redirect(url_for("staff_payments"))
+        if payment_at > datetime.now(BARANGAY_TIMEZONE) + timedelta(minutes=5):
+            conn.close()
+            flash("Payment date and time cannot be in the future.", "error")
+            return redirect(url_for("staff_payments"))
+
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM requests WHERE id=?", (request.form.get("request_id"),)).fetchone()
+        if not row:
+            conn.rollback()
+            conn.close()
+            abort(404)
+        if row["request_type"] not in payment_types:
+            conn.rollback()
+            conn.close()
+            abort(404)
+        if row["status"] != "Approved":
+            conn.rollback()
+            conn.close()
+            flash("Payment can only be recorded for an approved request that has not been released.", "error")
+            return redirect(url_for("staff_payments"))
+        if row["computed_fee"] is None or int(row["computed_fee"]) <= 0:
+            conn.rollback()
+            conn.close()
+            flash("This request has no payable fee to record.", "error")
+            return redirect(url_for("staff_payments"))
+        if request_payment_status(row) != "Unpaid":
+            conn.rollback()
+            conn.close()
+            flash("Payment has already been recorded or is not required.", "error")
+            return redirect(url_for("staff_payments"))
+        due = Decimal(str(row["computed_fee"]))
+        if amount < due:
+            conn.rollback()
+            conn.close()
+            flash(f"Amount received is short by ₱{due - amount:.2f}.", "error")
+            return redirect(url_for("staff_payments"))
+        change = amount - due
+        conn.execute(
+            "UPDATE requests SET payment_status='Paid', amount_paid=?, amount_received=?, change_given=?, payment_at=?, "
+            "payment_recorded_by=?, official_receipt_no=? WHERE id=? AND payment_status='Unpaid'",
+            (str(due), str(amount), str(change), payment_at.strftime("%Y-%m-%d %H:%M:%S"),
+             user["id"], receipt or None, row["id"]),
+        )
+        _audit(conn, user, "Recorded in-person document payment", target=row["reference_no"],
+               details=f"Fee: ₱{due:.2f}; received: ₱{amount:.2f}; change: ₱{change:.2f}" +
+               (f"; Receipt: {receipt}" if receipt else ""), module="payments")
+        conn.commit()
+        conn.close()
+        flash(f"Payment recorded for {row['reference_no']}.", "success")
+        return redirect(url_for("staff_payments"))
+
+    rows = conn.execute(
+        "SELECT r.*, u.full_name resident_name FROM requests r "
+        f"JOIN users u ON u.id=r.resident_id WHERE r.request_type {type_clause} "
+        "ORDER BY CASE WHEN r.status='Approved' THEN 0 ELSE 1 END, r.created_at DESC",
+        type_params,
+    ).fetchall()
+    today = datetime.now(BARANGAY_TIMEZONE).strftime("%Y-%m-%d")
+    awaiting = sum(
+        1 for row in rows
+        if row["status"] == "Approved" and row["computed_fee"] is not None
+        and int(row["computed_fee"]) > 0 and request_payment_status(row) == "Unpaid"
+    )
+    collected_today = conn.execute(
+        "SELECT COALESCE(SUM(amount_paid),0) AS total FROM requests "
+        f"WHERE request_type {type_clause} AND payment_status='Paid' AND payment_at LIKE ?",
+        type_params + [today + "%"],
+    ).fetchone()["total"]
+    conn.close()
+    return render_template(
+        "staff/payments.html", rows=rows, payment_status=request_payment_status,
+        payment_ui_state=payment_ui_state, awaiting_payment=awaiting,
+        collected_today=collected_today or 0, total_requests=len(rows),
+        payment_now=datetime.now(BARANGAY_TIMEZONE).strftime("%Y-%m-%dT%H:%M"),
+    )
+
+
 @app.route("/staff/complaints")
 @login_required("staff")
 def staff_complaints(user):
@@ -2600,6 +2793,7 @@ def staff_complaints(user):
 @login_required("staff", "admin")
 def update_request_status(user, request_id):
     conn = dbh.get_db()
+    conn.execute("BEGIN IMMEDIATE")
     row = conn.execute("SELECT * FROM requests WHERE id=?", (request_id,)).fetchone()
     if not row:
         conn.close()
@@ -2614,15 +2808,36 @@ def update_request_status(user, request_id):
         conn.close()
         flash("Invalid status.", "error")
         return redirect(url_for("view_request", request_id=request_id))
+    if new_status == "Completed":
+        if row["status"] != "Approved":
+            conn.close()
+            flash("Only an approved request can be marked as released.", "error")
+            return redirect(url_for("view_request", request_id=request_id))
+        if request_payment_status(row) not in {"Paid", "Not Required"}:
+            conn.close()
+            flash("Record the required payment before releasing this document.", "error")
+            return redirect(url_for("view_request", request_id=request_id))
+        if row["released_at"]:
+            conn.close()
+            flash("This document has already been released.", "error")
+            return redirect(url_for("view_request", request_id=request_id))
     if assigned and not valid_assignee(conn, assigned, offices_for_request_type(row["request_type"])):
         conn.close()
         flash("That staff member does not handle this type of request.", "error")
         return redirect(url_for("view_request", request_id=request_id))
 
-    conn.execute(
-        "UPDATE requests SET status=?, remarks=?, assigned_staff_id=?, updated_at=datetime('now') WHERE id=?",
-        (new_status, remarks, assigned, request_id),
-    )
+    if new_status == "Completed":
+        conn.execute(
+            "UPDATE requests SET status=?, remarks=?, assigned_staff_id=?, updated_at=datetime('now'), "
+            "released_at=datetime('now'), released_by=? WHERE id=? AND status='Approved' AND released_at IS NULL",
+            (new_status, remarks, assigned, user["id"], request_id),
+        )
+        _audit(conn, user, "Released document request", target=row["reference_no"], module="requests")
+    else:
+        conn.execute(
+            "UPDATE requests SET status=?, remarks=?, assigned_staff_id=?, updated_at=datetime('now') WHERE id=?",
+            (new_status, remarks, assigned, request_id),
+        )
     dbh.log_action(conn, user, f"Updated request status to {new_status}", target=row["reference_no"], module="requests")
     if new_status != row["status"]:
         dbh.log_status(conn, "request", request_id, new_status, user["full_name"], remarks or None)
@@ -3422,7 +3637,9 @@ def edit_administrator(user, account_id):
 def admin_requests(user):
     conn = dbh.get_db()
     status = request.args.get("status", "")
-    q = "SELECT r.*, u.full_name resident_name FROM requests r JOIN users u ON u.id=r.resident_id"
+    q = ("SELECT r.*, u.full_name resident_name, p.full_name payment_recorder_name, "
+         "x.full_name released_by_name FROM requests r JOIN users u ON u.id=r.resident_id "
+         "LEFT JOIN users p ON p.id=r.payment_recorded_by LEFT JOIN users x ON x.id=r.released_by")
     params = []
     if status:
         q += " WHERE r.status=?"
@@ -3430,7 +3647,8 @@ def admin_requests(user):
     q += " ORDER BY r.created_at DESC"
     rows = conn.execute(q, params).fetchall()
     conn.close()
-    return render_template("admin/requests.html", rows=rows, statuses=REQUEST_STATUSES, active_status=status)
+    return render_template("admin/requests.html", rows=rows, statuses=REQUEST_STATUSES, active_status=status,
+                           payment_status=request_payment_status)
 
 
 @app.route("/admin/complaints")
@@ -5049,7 +5267,12 @@ def search(user):
                     (like, like, like, like),
                 ).fetchall()
     conn.close()
-    return render_template("search.html", q=q, req_rows=req_rows, comp_rows=comp_rows)
+    show_requests = user["role"] == "resident" or bool(handled_request_types(user))
+    show_complaints = user["role"] == "resident" or can_handle_complaints(user)
+    return render_template(
+        "search.html", q=q, req_rows=req_rows, comp_rows=comp_rows,
+        show_requests=show_requests, show_complaints=show_complaints,
+    )
 
 
 @app.route("/uploads/<subdir>/<stored_name>")

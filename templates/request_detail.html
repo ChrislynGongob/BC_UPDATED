@@ -26,10 +26,21 @@
       {% endif %}
       <div class="detail-item"><div class="k">Processing fee</div>
         <div class="v">{{ 'Free' if fee == 0 else ('₱%d'|format(fee) if fee is not none else 'Inquire at office') }}
-          {% if payment_location and fee != 0 %}<span class="muted"> (pay at the {{ payment_location }} first, then present the receipt at the {{ claim_location }})</span>
+      {% if payment_location and fee != 0 %}<span class="muted"> (pay at the {{ payment_location }} first, then present the receipt at the {{ claim_location }})</span>
           {% else %}<span class="muted"> (paid in person upon claiming)</span>{% endif %}
         </div>
       </div>
+      <div class="detail-item"><div class="k">Payment status</div><div class="v"><span class="badge {{ 'badge-payment-paid' if payment_status=='Paid' else ('badge-payment-not-required' if payment_status=='Not Required' else 'badge-payment-unpaid') }}">{{ payment_status }}</span></div></div>
+      {% if current_user.role == 'admin' %}
+      <div class="detail-item"><div class="k">Payment date</div><div class="v">{{ r.payment_at or '—' }}</div></div>
+      <div class="detail-item"><div class="k">Recorded by</div><div class="v">{{ payment_recorder or '—' }}</div></div>
+      <div class="detail-item"><div class="k">Amount received</div><div class="v">{{ '₱%.2f'|format(r.amount_received) if r.amount_received is not none else '—' }}</div></div>
+      <div class="detail-item"><div class="k">Change given</div><div class="v">{{ '₱%.2f'|format(r.change_given or 0) if payment_status == 'Paid' else '—' }}</div></div>
+      <div class="detail-item"><div class="k">Official receipt</div><div class="v">{{ r.official_receipt_no or '—' }}</div></div>
+      <div class="detail-item"><div class="k">Release status</div><div class="v">{{ 'Released' if r.released_at or r.status == 'Completed' else 'Not Released' }}</div></div>
+      <div class="detail-item"><div class="k">Released at</div><div class="v">{{ r.released_at or '—' }}</div></div>
+      <div class="detail-item"><div class="k">Released by</div><div class="v">{{ releaser or '—' }}</div></div>
+      {% endif %}
     </div>
     <p><strong>Purpose:</strong> {{ r.purpose }}</p>
     {% if r.details %}<p><strong>Details:</strong> {{ r.details }}</p>{% endif %}
@@ -72,12 +83,14 @@
     {% if current_user.role in ['staff','admin'] %}
     <div class="card no-print">
       <h3>Update Status</h3>
-      <form method="POST" action="{{ url_for('update_request_status', request_id=r.id) }}" class="form-grid" data-confirm-message="Save this document request update?" data-confirm-label="Save update">
+      <form method="POST" action="{{ url_for('update_request_status', request_id=r.id) }}" class="form-grid" data-confirm-message="{{ 'Confirm that this document has been handed to the claimant?' if r.status=='Approved' else 'Save this document request update?' }}" data-confirm-label="{{ 'Confirm Release' if r.status=='Approved' else 'Save update' }}">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
         <div class="form-row">
           <label>Status</label>
           <select name="status">
             {% for s in statuses %}
-            <option value="{{ s }}" {{ 'selected' if r.status==s }}>{{ s }}</option>
+            <option value="{{ s }}" {{ 'selected' if r.status==s }}>{{ 'Completed (Mark as Released)' if s=='Completed' else s }}</option>
             {% endfor %}
           </select>
         </div>
@@ -94,7 +107,7 @@
           <label>Remarks</label>
           <textarea name="remarks" placeholder="Notes visible to the resident">{{ r.remarks or '' }}</textarea>
         </div>
-        <button class="btn btn-primary" type="submit">Save Update</button>
+        <button class="btn btn-primary" type="submit">{{ 'Save Update / Mark as Released' if r.status == 'Approved' else 'Save Update' }}</button>
       </form>
     </div>
     {% endif %}
@@ -112,10 +125,8 @@
         {% if r.request_type == 'Certificate of Indigency' %}
         <div class="detail-item"><div class="k">Copies</div><div class="v">{{ r.num_copies }}</div></div>
         {% endif %}
-        <div class="detail-item"><div class="k">Amount to pay</div><div class="v">{{ 'Free' if fee == 0 else ('₱%d'|format(fee) if fee is not none else 'Inquire at office') }}</div></div>
-        {% if payment_location and fee != 0 %}
-        <div class="detail-item"><div class="k">Pay first at</div><div class="v">{{ payment_location }} (bring the official receipt)</div></div>
-        {% endif %}
+        <div class="detail-item"><div class="k">Amount due</div><div class="v">{{ 'Payment Not Required' if fee == 0 else ('₱%d'|format(fee) if fee is not none else 'Inquire at office') }}</div></div>
+        {% if fee != 0 %}<div class="detail-item"><div class="k">Payment instruction</div><div class="v">Pay the applicable fee at the barangay office upon claiming your document.</div></div>{% endif %}
         <div class="detail-item"><div class="k">Claim at</div><div class="v">{{ claim_location }}</div></div>
         <div class="detail-item"><div class="k">Preferred date</div><div class="v">{{ r.claiming_date or 'Anytime during office hours' }}</div></div>
       </div>

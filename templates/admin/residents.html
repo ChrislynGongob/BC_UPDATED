@@ -58,6 +58,8 @@
         <td>
           {% if is_staff %}{{ u.contact_number or 'Not provided' }}{% else %}
           <form class="resident-admin-mobile-form" method="POST" action="{{ url_for('update_account_mobile', account_id=u.id) }}">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
             <input type="tel" name="contact_number" value="{{ u.contact_number or '' }}" aria-label="Mobile number for {{ u.full_name }}" placeholder="0917 123 4567" required>
             <button class="btn btn-outline btn-sm" type="submit">Save</button>
           </form>{% endif %}
@@ -79,10 +81,16 @@
             <a class="btn btn-outline btn-sm" href="{{ url_for('view_resident', resident_id=u.id) }}">View</a>
             <a class="btn btn-outline btn-sm" href="{{ url_for('edit_resident', resident_id=u.id) }}">Edit</a>
             {% if u.is_archived|int %}
-            <form method="POST" action="{{ url_for('restore_resident', resident_id=u.id) }}" data-confirm-message="Restore this resident account?" data-confirm-label="Restore"><button class="btn btn-outline btn-sm" type="submit">Restore</button></form>
+            <form method="POST" action="{{ url_for('restore_resident', resident_id=u.id) }}" data-confirm-message="Restore this resident account?" data-confirm-label="Restore">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<button class="btn btn-outline btn-sm" type="submit">Restore</button></form>
             {% else %}
-            <form method="POST" action="{{ url_for('toggle_resident', resident_id=u.id) }}" data-confirm-message="Change this resident account status?" data-confirm-label="Confirm change"><button class="btn btn-outline btn-sm" type="submit">{{ 'Mark Inactive' if u.status=='active' else 'Reactivate' }}</button></form>
-            <form method="POST" action="{{ url_for('archive_resident', resident_id=u.id) }}" data-confirm-message="Archive this resident? Existing requests and complaints will be retained." data-confirm-label="Archive"><button class="btn btn-outline btn-sm" type="submit">Archive</button></form>
+            <form method="POST" action="{{ url_for('toggle_resident', resident_id=u.id) }}" data-confirm-message="Change this resident account status?" data-confirm-label="Confirm change">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<button class="btn btn-outline btn-sm" type="submit">{{ 'Mark Inactive' if u.status=='active' else 'Reactivate' }}</button></form>
+            <form method="POST" action="{{ url_for('archive_resident', resident_id=u.id) }}" data-confirm-message="Archive this resident? Existing requests and complaints will be retained." data-confirm-label="Archive">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<button class="btn btn-outline btn-sm" type="submit">Archive</button></form>
             {% endif %}{% endif %}
           </div>
         </td>

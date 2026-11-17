@@ -13,6 +13,8 @@
     <h1>Create your resident account</h1>
     <p class="auth-sub">Only residents can self-register. Staff and admin accounts are issued by the barangay office.</p>
     <form method="POST" class="form-grid">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
       <div class="form-row">
         <label>Full name</label>
         <input type="text" name="full_name" required value="{{ form.get('full_name','') }}" placeholder="Juan Dela Cruz">

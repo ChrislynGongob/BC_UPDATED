@@ -233,7 +233,7 @@ class AdminHierarchyTests(unittest.TestCase):
         resident_html = residents_page.get_data(as_text=True)
         self.assertIn("Manage Residents", resident_html)
         self.assertNotIn('name="status"', resident_html)
-        self.assertIn("style.css?v=5", resident_html)
+        self.assertIn("style.css?v=6", resident_html)
         self.assertIn("No announcements available at the moment.", html)
 
         profile = self.client.get("/profile")

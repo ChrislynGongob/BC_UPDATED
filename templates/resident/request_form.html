@@ -4,6 +4,8 @@
 {% block content %}
 <div class="card request-form-card">
   <form method="POST" enctype="multipart/form-data" class="form-grid" id="request-form" data-confirm-message="Submit this document request? Please review the details and uploaded files before continuing." data-confirm-label="Submit request">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <div class="request-form-layout">
       <section class="request-form-panel form-grid" aria-labelledby="request-details-heading">
         <h2 id="request-details-heading">Request details</h2>

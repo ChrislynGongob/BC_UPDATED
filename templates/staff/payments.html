@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Payments — BarangayConnect{% endblock %}
+{% block page_title %}Payments{% endblock %}
+{% block extra_head %}<link rel="stylesheet" href="{{ url_for('static', filename='css/payments.css', v=1) }}">{% endblock %}
+{% block content %}
+<section class="ip-wrap" aria-labelledby="ip-heading">
+  <h2 class="ip-sr-only" id="ip-heading">Payments</h2>
+  <p class="ip-subtitle">Record fees received at the Barangay Treasurer Office.</p>
+  <div class="ip-note"><span aria-hidden="true">ⓘ</span> Payment does not approve or release a request.</div>
+
+  <div class="ip-stats">
+    <article class="ip-stat"><span>Awaiting Payment</span><strong>{{ awaiting_payment }}</strong></article>
+    <article class="ip-stat"><span>Collected Today</span><strong>₱{{ '%.2f'|format(collected_today) }}</strong></article>
+    <article class="ip-stat"><span>Total Requests</span><strong>{{ total_requests }}</strong></article>
+  </div>
+
+  <div class="ip-toolbar">
+    <label class="ip-search-label" for="ip-search">Search requests</label>
+    <input id="ip-search" class="ip-search" type="search" placeholder="Search reference or resident…" aria-label="Search reference or resident">
+    <div class="ip-chips" id="ip-filters" aria-label="Filter payments">
+      <button type="button" class="ip-chip" data-filter="all" aria-pressed="true">All</button>
+      <button type="button" class="ip-chip" data-filter="ready" aria-pressed="false">Ready to Pay</button>
+      <button type="button" class="ip-chip" data-filter="paid" aria-pressed="false">Paid</button>
+      <button type="button" class="ip-chip" data-filter="na" aria-pressed="false">Not Payable</button>
+    </div>
+  </div>
+
+  <div class="ip-card"><div class="ip-table-scroll">
+    <table class="ip-table">
+      <thead><tr><th>Reference</th><th>Resident</th><th>Document</th><th>Amount Due</th><th>Payment</th><th>Request</th><th class="ip-action-head">Action</th></tr></thead>
+      <tbody id="ip-rows">
+      {% for r in rows %}
+        {% set ui_label, ui_filter = payment_ui_state(r) %}
+        <tr data-filter="{{ 'ready' if ui_filter == 'ready' else ('paid' if ui_filter == 'paid' else 'na') }}" data-search="{{ (r.reference_no ~ ' ' ~ r.resident_name)|lower }}">
+          <td><span class="ip-ref">{{ r.reference_no }}</span></td>
+          <td>{{ r.resident_name }}</td>
+          <td class="ip-document"><strong>{{ r.request_type }}</strong><span>{{ r.purpose or 'Purpose not provided' }}</span></td>
+          <td class="ip-amount">{% if r.computed_fee == 0 %}Payment Not Required{% elif r.computed_fee is none %}Confirm at office{% else %}₱{{ '%.2f'|format(r.computed_fee) }}{% endif %}</td>
+          <td><span class="ip-badge ip-payment-{{ ui_filter }}">{{ ui_label }}</span></td>
+          <td><span class="ip-badge ip-request-{{ r.status|lower|replace(' ', '-') }}">{{ r.status }}</span></td>
+          <td class="ip-row-action">
+            {% if ui_filter == 'ready' %}
+            <button type="button" class="ip-button" data-open-payment
+              data-request-id="{{ r.id }}" data-reference="{{ r.reference_no }}"
+              data-resident="{{ r.resident_name }}" data-document="{{ r.request_type }}"
+              data-purpose="{{ r.purpose or 'Purpose not provided' }}" data-due="{{ '%.2f'|format(r.computed_fee) }}">Record Payment</button>
+            {% elif ui_filter == 'paid' %}<span class="ip-muted">Receipt recorded</span>
+            {% elif r.computed_fee == 0 %}<span class="ip-muted">No payment required</span>
+            {% elif r.status in ['Rejected', 'Completed'] %}<span class="ip-muted">{{ 'Request rejected — no fee due' if r.status == 'Rejected' else 'Completed without payment — contact Treasurer' }}</span>
+            {% elif r.computed_fee is none %}<span class="ip-muted">Fee must be confirmed before collection</span>
+            {% else %}<span class="ip-muted">Not yet eligible</span>{% endif %}
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="ip-empty">No document requests found.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div class="ip-empty" id="ip-empty" hidden>No matching requests.</div>
+  </div></div>
+</section>
+
+<div class="ip-scrim" id="ip-scrim" hidden></div>
+<aside class="ip-drawer" id="ip-drawer" aria-label="Record payment" aria-hidden="true" tabindex="-1">
+  <div class="ip-drawer-heading"><div><h3>Record Payment</h3><span class="ip-muted" id="ip-drawer-reference"></span></div><button type="button" class="ip-close" id="ip-close" aria-label="Close payment drawer">×</button></div>
+  <div class="ip-summary">
+    <span>Resident</span><strong id="ip-drawer-resident"></strong>
+    <span>Document</span><strong id="ip-drawer-document"></strong>
+    <span>Purpose</span><strong id="ip-drawer-purpose"></strong>
+    <span>Amount Due</span><strong id="ip-drawer-due"></strong>
+  </div>
+  <form method="POST" action="{{ url_for('staff_payments') }}" id="ip-payment-form" data-initial-payment-at="{{ payment_now }}"
+        data-confirm-message="Are you sure you want to record the in-person payment for this request? The request will remain at its current status."
+        data-confirm-label="Record Payment">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+    <input type="hidden" name="request_id" id="ip-request-id">
+    <label for="ip-amount-due">Amount Due <span>(read-only)</span></label>
+    <input class="ip-input" id="ip-amount-due" name="amount_due" type="text" readonly aria-readonly="true">
+    <label for="ip-amount-received">Amount Received (₱)</label>
+    <div class="ip-amount-row">
+      <input class="ip-input" id="ip-amount-received" name="amount_received" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" required>
+      <button class="ip-button ip-button-ghost" type="button" id="ip-exact">Exact</button>
+    </div>
+    <div class="ip-change" id="ip-change" hidden aria-live="polite"></div>
+    <label for="ip-payment-at">Payment Date and Time</label>
+    <input class="ip-input" id="ip-payment-at" name="payment_at" type="datetime-local" value="{{ payment_now }}" required>
+    <label for="ip-receipt">Official Receipt Number <span>(optional)</span></label>
+    <input class="ip-input" id="ip-receipt" name="official_receipt_no" type="text" maxlength="80" placeholder="e.g. OR-000123">
+    <div class="ip-drawer-actions">
+      <button class="ip-button ip-button-ghost" type="button" id="ip-cancel">Cancel</button>
+      <button class="ip-button" type="submit" id="ip-save" disabled>Record Payment</button>
+    </div>
+  </form>
+</aside>
+<script src="{{ url_for('static', filename='js/payments.js', v=3) }}" defer></script>
+{% endblock %}

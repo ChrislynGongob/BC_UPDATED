@@ -21,6 +21,8 @@
   </div>
 
   <form method="POST" enctype="multipart/form-data" class="form-grid">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <div class="form-row">
       <label>Upload a new profile picture</label>
       <div class="profile-file-control">
@@ -62,6 +64,8 @@
   <h3>Edit Personal Information</h3>
   <p class="muted">Update your own name and mobile number. Role and office assignments remain administrator-managed.</p>
   <form method="POST" class="form-grid">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <input type="hidden" name="action" value="personal_info">
     <div class="form-row"><label for="staff-profile-name">Full name</label><input id="staff-profile-name" type="text" name="full_name" maxlength="120" required value="{{ current_user.full_name }}"></div>
     <div class="form-row"><label for="staff-profile-mobile">Philippine mobile number</label><input id="staff-profile-mobile" type="tel" name="contact_number" value="{{ current_user.contact_number or '' }}" placeholder="0917 123 4567"><span class="hint">Leave blank if you do not want a mobile number listed.</span></div>
@@ -75,6 +79,8 @@
   <h3>Address / Location</h3>
   <p class="muted">This is used to pre-fill your document requests.</p>
   <form method="POST" action="{{ url_for('update_address') }}" class="form-grid">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <div class="form-row">
       <label>House No. / Street / Purok</label>
       <input type="text" name="address" required value="{{ current_user.address or '' }}" placeholder="Purok / Street, Barangay">
@@ -92,6 +98,8 @@
 <div class="card profile-settings-card" id="change-password">
   <h3>Change Password</h3>
   <form method="POST" action="{{ url_for('change_password') }}" class="form-grid">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <div class="form-row">
       <label>Current password</label>
       <input type="password" name="current_password" required>

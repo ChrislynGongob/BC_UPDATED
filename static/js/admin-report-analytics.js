@@ -218,7 +218,11 @@
     });
     const response = await fetch(root.dataset.colorsUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || "",
+      },
       body: JSON.stringify({
         csrf_token: root.dataset.csrfToken,
         mode: mode,

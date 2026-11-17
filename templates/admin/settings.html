@@ -6,6 +6,8 @@
   <h2>Barangay Information</h2>
   <p class="muted">These details appear on the resident-facing Emergency Hotlines page.</p>
   <form method="POST" class="form-grid admin-settings-form">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     {% for key, label in fields %}
     <div class="form-row">
       <label for="setting-{{ key }}">{{ label }}</label>

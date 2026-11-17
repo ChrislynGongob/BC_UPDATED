@@ -39,6 +39,8 @@
     <article class="um-staff-panel um-staff-create">
       <div class="um-staff-panel-heading"><h3>Create Staff Account</h3><p>New staff receive a temporary password and must change it at first sign-in.</p></div>
       <form method="POST" action="{{ url_for('admin_staff') }}" class="um-staff-create-form">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
         <label>Full Name<input type="text" name="full_name" maxlength="120" required></label>
         <label>Email<input type="email" name="email" required></label>
         <label>Philippine Mobile Number <span class="um-optional">(optional)</span><input type="tel" name="contact_number" placeholder="0917 123 4567"></label>
@@ -67,15 +69,29 @@
           {% set initials = (u.full_name or '?').split() %}
           <td class="um-name-cell"><span class="um-person-avatar" aria-hidden="true">{% if u.profile_picture %}<img src="{{ url_for('serve_upload', subdir='profiles', stored_name=u.profile_picture) }}" alt="" loading="lazy" onerror="this.hidden=true">{% endif %}<span class="um-initials">{{ (initials[0][0] ~ (initials[-1][0] if initials|length > 1 else ''))|upper }}</span></span><span class="um-person-name" title="{{ u.full_name }}">{{ u.full_name }}</span></td>
           <td><span class="um-truncate" title="{{ u.email }}">{{ u.email }}</span></td><td>{{ u.contact_number or '—' }}</td>
-          <td><form method="POST" action="{{ url_for('set_staff_office', staff_id=u.id) }}" class="um-office-edit"><label class="sr-only" for="staff-office-{{ u.id }}">Assigned office for {{ u.full_name }}</label><select id="staff-office-{{ u.id }}" name="office">{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office == key }}>{{ cfg.label }}</option>{% endfor %}</select><button class="um-small-save" type="submit" aria-label="Save office for {{ u.full_name }}">Save</button></form></td>
+          <td><form method="POST" action="{{ url_for('set_staff_office', staff_id=u.id) }}" class="um-office-edit">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<label class="sr-only" for="staff-office-{{ u.id }}">Assigned office for {{ u.full_name }}</label><select id="staff-office-{{ u.id }}" name="office">{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office == key }}>{{ cfg.label }}</option>{% endfor %}</select><button class="um-small-save" type="submit" aria-label="Save office for {{ u.full_name }}">Save</button></form></td>
           <td><strong>{{ (u.active_request_count or 0) + (u.active_complaint_count or 0) }} active items</strong><span class="um-workload-detail">{{ u.active_request_count or 0 }} requests · {{ u.active_complaint_count or 0 }} complaints</span></td>
           <td><span class="um-status-pill {{ 'archived' if u.is_archived|int else u.status }}">{{ 'Archived' if u.is_archived|int else u.status|title }}</span></td><td class="um-date" title="{{ u.created_at }}">{{ u.created_at or '—' }}</td>
           <td><div class="um-row-actions"><a class="um-icon-action" href="{{ url_for('view_staff_account', staff_id=u.id) }}" aria-label="View {{ u.full_name }}" title="View">◉</a><a class="um-icon-action" href="{{ url_for('edit_staff_account', staff_id=u.id) }}" aria-label="Edit {{ u.full_name }}" title="Edit">✎</a><details class="um-more"><summary class="um-icon-action" aria-label="More actions for {{ u.full_name }}" title="More actions">⋯</summary><div class="um-more-menu">
-            {% if u.is_archived|int %}<form method="POST" action="{{ url_for('user_role_administration') }}"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button type="submit">Restore account</button></form>
-            {% else %}<form method="POST" action="{{ url_for('toggle_staff', staff_id=u.id) }}" data-confirm-message="Change this staff account status?" data-confirm-label="Confirm change"><button type="submit">{{ 'Deactivate' if u.status == 'active' else 'Activate' }}</button></form><form method="POST" action="{{ url_for('reset_staff_password', staff_id=u.id) }}" data-confirm-message="Reset this staff member’s sign-in credentials?" data-confirm-label="Reset password"><button type="submit">Reset password</button></form><form method="POST" action="{{ url_for('user_role_administration') }}" data-confirm-message="Archive this staff account and retain its history?" data-confirm-label="Archive"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button type="submit">Archive account</button></form>
-              {% if founder %}<form method="POST" action="{{ url_for('user_role_administration') }}" class="um-role-change" data-confirm-message="Apply this staff account role or office change?"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="role"><label class="sr-only" for="staff-role-{{ u.id }}">Role for {{ u.full_name }}</label><select id="staff-role-{{ u.id }}" name="role"><option value="resident">Resident</option><option value="staff" selected>Staff</option></select><label class="sr-only" for="staff-role-office-{{ u.id }}">Staff office</label><select id="staff-role-office-{{ u.id }}" name="office">{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office == key }}>{{ cfg.label }}</option>{% endfor %}</select><button type="submit">Change role / office</button></form>{% endif %}
+            {% if u.is_archived|int %}<form method="POST" action="{{ url_for('user_role_administration') }}">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button type="submit">Restore account</button></form>
+            {% else %}<form method="POST" action="{{ url_for('toggle_staff', staff_id=u.id) }}" data-confirm-message="Change this staff account status?" data-confirm-label="Confirm change">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<button type="submit">{{ 'Deactivate' if u.status == 'active' else 'Activate' }}</button></form><form method="POST" action="{{ url_for('reset_staff_password', staff_id=u.id) }}" data-confirm-message="Reset this staff member’s sign-in credentials?" data-confirm-label="Reset password">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<button type="submit">Reset password</button></form><form method="POST" action="{{ url_for('user_role_administration') }}" data-confirm-message="Archive this staff account and retain its history?" data-confirm-label="Archive">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button type="submit">Archive account</button></form>
+              {% if founder %}<form method="POST" action="{{ url_for('user_role_administration') }}" class="um-role-change" data-confirm-message="Apply this staff account role or office change?">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="role"><label class="sr-only" for="staff-role-{{ u.id }}">Role for {{ u.full_name }}</label><select id="staff-role-{{ u.id }}" name="role"><option value="resident">Resident</option><option value="staff" selected>Staff</option></select><label class="sr-only" for="staff-role-office-{{ u.id }}">Staff office</label><select id="staff-role-office-{{ u.id }}" name="office">{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office == key }}>{{ cfg.label }}</option>{% endfor %}</select><button type="submit">Change role / office</button></form>{% endif %}
             {% endif %}
-            <form method="POST" action="{{ url_for('user_role_administration') }}" data-confirm-message="Permanently delete this staff account? This cannot be undone. Accounts with linked service records will be blocked." data-confirm-label="Delete permanently"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="delete"><button class="um-danger-action" type="submit">Delete permanently</button></form>
+            <form method="POST" action="{{ url_for('user_role_administration') }}" data-confirm-message="Permanently delete this staff account? This cannot be undone. Accounts with linked service records will be blocked." data-confirm-label="Delete permanently">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="delete"><button class="um-danger-action" type="submit">Delete permanently</button></form>
           </div></details></div></td>
         </tr>{% endfor %}</tbody>
       </table></div>{% else %}<div class="um-empty">No staff accounts match the selected filters.</div>{% endif %}
@@ -148,13 +164,23 @@
                 <summary class="um-icon-action" aria-label="More actions for {{ u.full_name }}" title="More actions"><span aria-hidden="true">⋯</span></summary>
                 <div class="um-more-menu">
                   {% if u.is_archived|int %}
-                    <form method="POST" data-confirm-message="Restore this account?" data-confirm-label="Restore"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button type="submit">Restore account</button></form>
+                    <form method="POST" data-confirm-message="Restore this account?" data-confirm-label="Restore">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="restore"><button type="submit">Restore account</button></form>
                   {% else %}
-                    <form method="POST" data-confirm-message="{{ 'Deactivate' if u.status == 'active' else 'Activate' }} this account?" data-confirm-label="Confirm change"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="status"><button type="submit">{{ 'Deactivate' if u.status == 'active' else 'Activate' }}</button></form>
-                    <form method="POST" data-confirm-message="Archive this account and retain its history?" data-confirm-label="Archive"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button type="submit">Archive account</button></form>
-                    {% if founder and u.role == 'staff' %}<form method="POST" class="um-role-change" data-confirm-message="Apply this staff account role or office change?"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="role"><label class="sr-only" for="role-{{ u.id }}">Change staff role for {{ u.full_name }}</label><select id="role-{{ u.id }}" name="role"><option value="resident">Resident</option><option value="staff" selected>Staff</option></select><label class="sr-only" for="office-{{ u.id }}">Staff office</label><select id="office-{{ u.id }}" name="office"><option value="">Choose staff office</option>{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office==key }}>{{ cfg.label }}</option>{% endfor %}</select><button type="submit">Change role / office</button></form>{% endif %}
+                    <form method="POST" data-confirm-message="{{ 'Deactivate' if u.status == 'active' else 'Activate' }} this account?" data-confirm-label="Confirm change">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="status"><button type="submit">{{ 'Deactivate' if u.status == 'active' else 'Activate' }}</button></form>
+                    <form method="POST" data-confirm-message="Archive this account and retain its history?" data-confirm-label="Archive">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="archive"><button type="submit">Archive account</button></form>
+                    {% if founder and u.role == 'staff' %}<form method="POST" class="um-role-change" data-confirm-message="Apply this staff account role or office change?">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="role"><label class="sr-only" for="role-{{ u.id }}">Change staff role for {{ u.full_name }}</label><select id="role-{{ u.id }}" name="role"><option value="resident">Resident</option><option value="staff" selected>Staff</option></select><label class="sr-only" for="office-{{ u.id }}">Staff office</label><select id="office-{{ u.id }}" name="office"><option value="">Choose staff office</option>{% for key,cfg in offices.items() %}<option value="{{ key }}" {{ 'selected' if u.office==key }}>{{ cfg.label }}</option>{% endfor %}</select><button type="submit">Change role / office</button></form>{% endif %}
                   {% endif %}
-                  {% if u.role != 'resident' %}<form method="POST" data-confirm-message="Permanently delete this account? This cannot be undone. Accounts with linked service records will be blocked." data-confirm-label="Delete permanently"><input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="delete"><button class="um-danger-action" type="submit">Delete permanently</button></form>{% endif %}
+                  {% if u.role != 'resident' %}<form method="POST" data-confirm-message="Permanently delete this account? This cannot be undone. Accounts with linked service records will be blocked." data-confirm-label="Delete permanently">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<input type="hidden" name="account_id" value="{{ u.id }}"><input type="hidden" name="operation" value="delete"><button class="um-danger-action" type="submit">Delete permanently</button></form>{% endif %}
                 </div>
               </details>
               {% endif %}

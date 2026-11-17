@@ -4,6 +4,8 @@
 {% block content %}
 <div class="card" style="max-width:720px">
   <form method="POST" class="form-grid">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <div class="form-row"><label for="staff-full-name">Full name</label><input id="staff-full-name" name="full_name" maxlength="120" value="{{ account.full_name }}" required></div>
     <div class="form-row"><label for="staff-email">Email</label><input id="staff-email" type="email" name="email" value="{{ account.email }}" required></div>
     <div class="form-row"><label for="staff-mobile">Mobile number</label><input id="staff-mobile" type="tel" name="contact_number" value="{{ account.contact_number or '' }}" placeholder="0917 123 4567"></div>

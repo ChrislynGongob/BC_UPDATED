@@ -2,6 +2,7 @@
 {% block title %}Search — BarangayConnect{% endblock %}
 {% block content %}
 {% if q %}
+{% if show_requests %}
 <div class="card">
   <h3>Requests {% if req_rows %}({{ req_rows|length }}){% endif %}</h3>
   {% if req_rows %}
@@ -19,7 +20,9 @@
   </table></div>
   {% else %}<div class="empty-state">No matching requests.</div>{% endif %}
 </div>
+{% endif %}
 
+{% if show_complaints %}
 <div class="card">
   <h3>Complaints {% if comp_rows %}({{ comp_rows|length }}){% endif %}</h3>
   {% if comp_rows %}
@@ -37,7 +40,12 @@
   </table></div>
   {% else %}<div class="empty-state">No matching complaints.</div>{% endif %}
 </div>
+{% endif %}
 {% else %}
-<div class="empty-state">Type something above to search across requests and complaints.</div>
+{% if show_requests or show_complaints %}
+<div class="empty-state">Type something above to search across {% if show_requests and show_complaints %}requests and complaints{% elif show_requests %}requests{% else %}complaints{% endif %}.</div>
+{% else %}
+<div class="empty-state">There are no searchable records for your account.</div>
+{% endif %}
 {% endif %}
 {% endblock %}

@@ -13,6 +13,8 @@
     <h1>Welcome back</h1>
     <p class="auth-sub">Log in to submit requests, file complaints, and track their status.</p>
     <form method="POST" class="form-grid">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
       <div class="form-row">
         <label>Email address</label>
         <input type="email" name="email" required autofocus placeholder="juan.delacruz@email.com">

@@ -21,7 +21,9 @@
 
 <div class="card"><h2>Currently locked accounts</h2>
   {% if locked_rows %}<div class="table-wrap"><table><tr><th>Account</th><th>Role</th><th>Locked until</th><th>Action</th></tr>
-    {% for account in locked_rows %}<tr><td>{{ account.full_name }}<div class="muted">{{ account.email }}</div></td><td>{{ account.role|title }}</td><td>{{ account.locked_until }}</td><td><form method="POST" action="{{ url_for('unlock_security_account', account_id=account.id) }}" data-confirm-message="Unlock this account now?" data-confirm-label="Unlock account"><input type="hidden" name="csrf_token" value="{{ unlock_csrf }}"><button class="btn btn-outline btn-sm" type="submit">Unlock account</button></form></td></tr>{% endfor %}
+    {% for account in locked_rows %}<tr><td>{{ account.full_name }}<div class="muted">{{ account.email }}</div></td><td>{{ account.role|title }}</td><td>{{ account.locked_until }}</td><td><form method="POST" action="{{ url_for('unlock_security_account', account_id=account.id) }}" data-confirm-message="Unlock this account now?" data-confirm-label="Unlock account">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+<input type="hidden" name="csrf_token" value="{{ unlock_csrf }}"><button class="btn btn-outline btn-sm" type="submit">Unlock account</button></form></td></tr>{% endfor %}
   </table></div>{% else %}<p>No accounts are currently locked.</p>{% endif %}
   <p class="muted">Account unlocks are recorded in the audit log. Administrator unlocks require a recent email verification.</p>
 </div>

@@ -15,10 +15,14 @@
   <p>{{ 'Residents reported ' ~ issue.category ~ ' in ' ~ (issue.location or 'an unspecified location') ~ '.' }}</p>
   {% if following %}
   <form method="POST" action="{{ url_for('unfollow_community_issue', issue_id=issue.id) }}">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <button class="btn btn-outline" type="submit">Unfollow Issue</button>
   </form>
   {% else %}
   <form method="POST" action="{{ url_for('follow_community_issue', issue_id=issue.id) }}">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <button class="btn btn-primary" type="submit">Follow Issue</button>
   </form>
   {% endif %}

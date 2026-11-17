@@ -3,6 +3,8 @@
 {% block page_title %}Edit Administrator{% endblock %}
 {% block content %}
 <div class="card" style="max-width:720px"><form method="POST" class="form-grid">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
   <div class="form-row"><label for="full_name">Full name</label><input id="full_name" name="full_name" maxlength="120" value="{{ account.full_name }}" required></div>
   <div class="form-row"><label for="email">Email</label><input id="email" type="email" name="email" value="{{ account.email }}" required></div>
   <div class="form-row"><label for="recovery_email">Recovery email</label><input id="recovery_email" type="email" name="recovery_email" value="{{ account.recovery_email or '' }}" required></div>

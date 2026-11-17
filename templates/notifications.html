@@ -7,6 +7,8 @@
     <h3>All Notifications</h3>
     {% if rows %}
     <form method="POST" action="{{ url_for('mark_notifications_read') }}">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
       <button class="btn btn-outline btn-sm" type="submit">Mark all as read</button>
     </form>
     {% endif %}

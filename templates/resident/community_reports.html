@@ -21,6 +21,8 @@
       <span class="muted">Following updates</span>
       {% else %}
       <form method="POST" action="{{ url_for('follow_community_issue', issue_id=issue.id) }}">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
         <button class="btn btn-outline btn-sm" type="submit">Follow Issue</button>
       </form>
       {% endif %}

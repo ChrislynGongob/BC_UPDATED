@@ -137,7 +137,8 @@ p { line-height: 1.55; }
 .logout-link {
   display: flex; align-items: center; gap: 12px; color: #F3A9AC;
   padding: 11px 14px; border-radius: 10px; font-size: 14px; font-weight: 500;
-  margin-top: 8px;
+  margin-top: 8px; width: 100%; border: 0; background: transparent;
+  text-align: left; font-family: inherit; cursor: pointer;
 }
 .logout-link:hover { background: rgba(229,72,77,0.14); color: #fff; }
 
@@ -252,6 +253,10 @@ p { line-height: 1.55; }
 .app-confirm-card { display: grid; justify-items: start; gap: 12px; padding: 26px; }
 .app-confirm-card h2, .app-confirm-card p { margin: 0; }
 .app-confirm-card p { line-height: 1.55; overflow-wrap: anywhere; }
+.app-confirm-reference { display: grid; gap: 4px; width: 100%; padding: 11px 13px; border: 1px solid #C7ECF4; border-radius: 10px; background: #EAF7FB; }
+.app-confirm-reference span { color: #527087; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.app-confirm-reference strong { color: #0B6E86; font: 700 14px ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
+.app-confirm-reference[hidden] { display: none; }
 .app-confirm-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: #EAF7FB; color: var(--cyan-dark); font-size: 22px; font-weight: 800; }
 .app-confirm-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; width: 100%; margin-top: 8px; }
 .concern-success-dialog {
@@ -306,6 +311,9 @@ tr:last-child td { border-bottom: none; }
 .badge-Processing { background: #E4ECFB; color: #2451B0; }
 .badge-Approved, .badge-Completed, .badge-Resolved { background: #E1F7EC; color: #157347; }
 .badge-Rejected, .badge-Closed { background: #FBE4E4; color: #B42318; }
+.badge-payment-unpaid { background: #FDF1DC; color: #A16207; }
+.badge-payment-paid { background: #E1F7EC; color: #157347; }
+.badge-payment-not-required { background: #E4ECFB; color: #2451B0; }
 
 /* ---------------------------------------------------------------- priority */
 .priority-High { background: #FDF1DC; color: #A16207; }

@@ -336,7 +336,7 @@ cookies use Secure, HttpOnly, and SameSite=Lax attributes.
 For PostgreSQL, schema migration and account provisioning are separate steps:
 
 1. Schedule a maintenance window and take a recoverable database backup.
-2. Review and run `postgres_migrations/001_admin_hierarchy.sql`, `002_account_archive_audit.sql`, and `003_security_sessions.sql` in order, manually as the database owner. Migration 003 adds account session-versioning and an audit index for login throttling; it preserves existing rows.
+2. Review and run `postgres_migrations/001_admin_hierarchy.sql` through `006_payment_received_and_change.sql` in order, manually as the database owner. Migrations 005 and 006 add payment and release tracking without changing computed fees or request statuses. In Supabase, open the project's SQL Editor, review each migration file, run it as the database owner, and verify the new columns on `public.requests` before deploying.
 3. Deploy the application code to Render only after the migration succeeds. Do not run schema migration from the Render start command; PostgreSQL migrations remain manual.
 4. If the database has no Founder, set `DB_BACKEND=postgres`, `DATABASE_URL`, `FOUNDING_ADMIN_NAME`, and `FOUNDING_ADMIN_PASSWORD` in a protected, short-lived environment. Run `python setup_founding_admin.py` once. It provisions `ralphpatrickga@gmail.com` as the active Founding Admin, hashes the supplied password, requires a password change after OTP login, and refuses to modify an existing account or proceed if another Founder exists.
 5. Have the new Founder complete OTP login and the required password change. Confirm exactly one active Founder, then remove the temporary password variable from the environment.

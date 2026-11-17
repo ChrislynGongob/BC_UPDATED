@@ -168,7 +168,10 @@
     try {
       const res = await fetch(MESSAGE_URL, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]')?.content || "",
+        },
         body: JSON.stringify({ message: text }),
       });
       const data = await res.json();

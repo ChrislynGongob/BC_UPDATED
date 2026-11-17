@@ -16,12 +16,17 @@
 <div class="card">
   {% if rows %}
   <div class="table-wrap"><table>
-    <tr><th>Reference</th><th>Resident</th><th>Type</th><th>Status</th><th>Filed</th><th></th></tr>
+    <tr><th>Reference</th><th>Resident</th><th>Type</th><th>Amount due</th><th>Payment</th><th>Fee / received / change</th><th>Paid at / by</th><th>Release</th><th>Status</th><th>Filed</th><th></th></tr>
     {% for r in rows %}
     <tr>
       <td class="ref-code">{{ r.reference_no }}</td>
       <td>{{ r.resident_name }}</td>
       <td>{{ r.request_type }}</td>
+      <td>{{ 'Not Required' if r.computed_fee == 0 else ('₱%s'|format(r.computed_fee) if r.computed_fee is not none else 'Confirm at office') }}</td>
+      <td><span class="badge {{ 'badge-payment-paid' if payment_status(r)=='Paid' else ('badge-payment-not-required' if payment_status(r)=='Not Required' else 'badge-payment-unpaid') }}">{{ payment_status(r) }}</span></td>
+      <td>{% if payment_status(r) == 'Paid' %}₱{{ '%.2f'|format(r.amount_paid or 0) }} / ₱{{ '%.2f'|format(r.amount_received or 0) }} / ₱{{ '%.2f'|format(r.change_given or 0) }}{% else %}—{% endif %}</td>
+      <td>{{ r.payment_at or '—' }}{% if r.payment_recorder_name %}<br><span class="muted">{{ r.payment_recorder_name }}</span>{% endif %}</td>
+      <td>{{ 'Released' if r.released_at or r.status == 'Completed' else 'Not Released' }}{% if r.released_by_name %}<br><span class="muted">{{ r.released_by_name }}</span>{% endif %}</td>
       <td><span class="badge badge-{{ r.status.replace(' ','.') }}">{{ r.status }}</span></td>
       <td class="muted">{{ r.created_at }}</td>
       <td><a class="btn btn-outline btn-sm" href="{{ url_for('view_request', request_id=r.id) }}">View</a></td>

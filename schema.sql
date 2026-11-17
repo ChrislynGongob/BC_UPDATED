@@ -54,9 +54,21 @@ CREATE TABLE IF NOT EXISTS requests (
                     CHECK (status IN ('Submitted','Under Review','Processing','Approved','Rejected','Completed')),
     assigned_staff_id INTEGER REFERENCES users(id),
     remarks         TEXT,
+    payment_status  TEXT NOT NULL DEFAULT 'Unpaid'
+                    CHECK (payment_status IN ('Unpaid','Paid','Not Required')),
+    amount_paid     NUMERIC,
+    amount_received NUMERIC,
+    change_given    NUMERIC NOT NULL DEFAULT 0,
+    payment_at      TEXT,
+    payment_recorded_by INTEGER REFERENCES users(id),
+    official_receipt_no TEXT,
+    released_at     TEXT,
+    released_by     INTEGER REFERENCES users(id),
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_requests_payment_release ON requests(payment_status, status);
 
 CREATE TABLE IF NOT EXISTS request_files (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

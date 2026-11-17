@@ -5,6 +5,8 @@
   <h1>Verify your admin login</h1>
   <p class="auth-sub">Enter the six-digit code sent to your registered email. It expires after 5 minutes. You have up to 5 incorrect attempts.</p>
   <form method="post" action="{{ url_for('verify_otp') }}" class="form-grid">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-row">
       <label for="otp">Email verification code</label>
@@ -13,6 +15,8 @@
     <button class="btn btn-primary btn-block" type="submit">Verify and continue</button>
   </form>
   <form method="post" action="{{ url_for('resend_otp') }}">
+  <input type="hidden" name="_csrf_token" value="{{ csrf_form_token }}">
+
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button class="btn btn-block" id="resend-otp" type="submit" data-wait="{{ resend_wait }}" {% if resend_wait %}disabled{% endif %}>Resend code</button>
     <p id="resend-status" role="status">{% if resend_wait %}Resend available in {{ resend_wait }} seconds.{% endif %}</p>
